@@ -27,13 +27,19 @@ func TestChatFiltersArchiveAndFavorite(t *testing.T) {
 	mustUpsert(store.Chat{ID: "g@g.us", Name: "Grupo", IsGroup: true, LastMessageAt: 200, LastMessage: "ok"})
 	mustUpsert(store.Chat{ID: "b@s.whatsapp.net", Name: "Bet", IsPinned: true, LastMessageAt: 100, LastMessage: "x"})
 	mustUpsert(store.Chat{ID: "c@g.us", Name: "Comunidad", IsGroup: true, IsCommunity: true, LastMessageAt: 250, LastMessage: "novedad"})
+	mustUpsert(store.Chat{ID: "status@broadcast", Name: "Estados", LastMessageAt: 280, LastMessage: "story"})
 
 	all, err := s.ListChatsFiltered(ctx, store.FilterAll, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(all) != 3 {
-		t.Fatalf("FilterAll want 3 (no community) got %d", len(all))
+		t.Fatalf("FilterAll want 3 (no community/status) got %d", len(all))
+	}
+	for _, c := range all {
+		if c.ID == "status@broadcast" || c.IsCommunity {
+			t.Fatalf("FilterAll leaked special chat: %+v", c)
+		}
 	}
 
 	fav, err := s.ListChatsFiltered(ctx, store.FilterFavorites, 50)
@@ -50,6 +56,14 @@ func TestChatFiltersArchiveAndFavorite(t *testing.T) {
 	}
 	if len(groups) != 1 || !groups[0].IsGroup || groups[0].IsCommunity {
 		t.Fatalf("FilterGroups %+v", groups)
+	}
+
+	estados, err := s.ListChatsFiltered(ctx, store.FilterEstados, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(estados) != 1 || estados[0].ID != "status@broadcast" {
+		t.Fatalf("FilterEstados %+v", estados)
 	}
 
 	noved, err := s.ListChatsFiltered(ctx, store.FilterNovedades, 50)
@@ -86,7 +100,6 @@ func TestChatFiltersArchiveAndFavorite(t *testing.T) {
 	if err := s.SetChatFavorite(ctx, "a@s.whatsapp.net", true); err != nil {
 		t.Fatal(err)
 	}
-	// Still archived → not in Favorites (favorites exclude archived).
 	fav, err = s.ListChatsFiltered(ctx, store.FilterFavorites, 50)
 	if err != nil {
 		t.Fatal(err)

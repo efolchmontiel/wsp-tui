@@ -8,23 +8,27 @@ import (
 	"time"
 )
 
-// ListChats returns non-archived chats ordered by pinned then recent activity.
 func (s *Store) ListChats(ctx context.Context, limit int) ([]Chat, error) {
 	return s.ListChatsFiltered(ctx, FilterAll, limit)
 }
 
-// ListChatsFiltered returns chats for a sidebar filter tab.
 func (s *Store) ListChatsFiltered(ctx context.Context, filter ChatFilter, limit int) ([]Chat, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	// Communities never appear in Todos / Favoritos / Grupos — only in Novedades (or Archivados).
-	where := "COALESCE(s.archived, 0) = 0 AND COALESCE(c.is_community, 0) = 0"
+	// Status and communities have their own filters.
+	noStatus := ` AND c.id != 'status@broadcast' AND c.id NOT LIKE 'status@%'`
+	noCommunity := ` AND COALESCE(c.is_community, 0) = 0`
+	where := "COALESCE(s.archived, 0) = 0" + noCommunity + noStatus
 	switch filter {
 	case FilterFavorites:
-		where = "COALESCE(s.archived, 0) = 0 AND COALESCE(c.is_community, 0) = 0 AND c.is_pinned = 1"
+		where = "COALESCE(s.archived, 0) = 0" + noCommunity + noStatus + " AND c.is_pinned = 1"
 	case FilterGroups:
-		where = "COALESCE(s.archived, 0) = 0 AND COALESCE(c.is_community, 0) = 0 AND c.is_group = 1"
+		where = "COALESCE(s.archived, 0) = 0" + noCommunity + noStatus + " AND c.is_group = 1"
+	case FilterEstados:
+		where = `COALESCE(s.archived, 0) = 0 AND (
+			c.id = 'status@broadcast' OR c.id LIKE 'status@%'
+		)`
 	case FilterNovedades:
 		where = "COALESCE(s.archived, 0) = 0 AND COALESCE(c.is_community, 0) = 1"
 	case FilterArchived:
@@ -69,8 +73,6 @@ LIMIT ?`
 	return dedupeOneToOneChats(out), nil
 }
 
-// dedupeOneToOneChats collapses LID + phone JID duplicates that share the same
-// display phone (e.g. two "+56 9 …" rows for one contact).
 func dedupeOneToOneChats(in []Chat) []Chat {
 	if len(in) < 2 {
 		return in
@@ -123,7 +125,6 @@ func onlyDigits(s string) string {
 }
 
 func preferChat(a, b Chat) bool {
-	// Prefer classic WhatsApp phone JIDs over LID aliases.
 	aPN := strings.Contains(a.ID, "@s.whatsapp.net")
 	bPN := strings.Contains(b.ID, "@s.whatsapp.net")
 	if aPN != bPN {
@@ -138,7 +139,78 @@ func preferChat(a, b Chat) bool {
 	return a.IsPinned && !b.IsPinned
 }
 
-// SetChatArchived marks a conversation archived (hidden from Todos).
+// SameOneToOne reports whether two chat IDs likely refer to the same 1:1 peer
+// (phone vs LID duplicates).
+func SameOneToOne(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	ka := chatDedupeKey(Chat{ID: a})
+	kb := chatDedupeKey(Chat{ID: b})
+	return ka != "" && ka == kb
+}
+
+// PreferExistingChatID picks an already-known chat row when WhatsApp alternates
+// between phone (@s.whatsapp.net) and LID (@lid) for the same peer — including
+// "message yourself".
+func (s *Store) PreferExistingChatID(ctx context.Context, candidates ...string) string {
+	primary := ""
+	for _, id := range candidates {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if primary == "" {
+			primary = id
+		}
+		if _, err := s.GetChat(ctx, id); err == nil {
+			return id
+		}
+	}
+	if primary == "" {
+		return ""
+	}
+	key := chatDedupeKey(Chat{ID: primary})
+	if key == "" {
+		return primary
+	}
+	chats, err := s.ListChats(ctx, 500)
+	if err != nil {
+		return primary
+	}
+	for _, c := range chats {
+		if c.IsGroup || c.IsCommunity {
+			continue
+		}
+		if chatDedupeKey(c) == key {
+			return c.ID
+		}
+	}
+	return primary
+}
+
+// relatedOneToOneChatIDs returns chatID plus any phone/LID siblings that share
+// the same peer (so call_incoming sticky rows resolve across JID flips).
+func (s *Store) relatedOneToOneChatIDs(ctx context.Context, chatID string) []string {
+	out := []string{chatID}
+	chats, err := s.ListChats(ctx, 500)
+	if err != nil {
+		return out
+	}
+	for _, c := range chats {
+		if c.ID == chatID || c.IsGroup || c.IsCommunity {
+			continue
+		}
+		if SameOneToOne(c.ID, chatID) {
+			out = append(out, c.ID)
+		}
+	}
+	return out
+}
+
 func (s *Store) SetChatArchived(ctx context.Context, chatID string, archived bool) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO chat_settings (chat_id, pinned, muted_until, archived, pronoun)
@@ -148,21 +220,18 @@ ON CONFLICT(chat_id) DO UPDATE SET archived = excluded.archived
 	return err
 }
 
-// IsChatArchived reports archive flag.
 func (s *Store) IsChatArchived(ctx context.Context, chatID string) bool {
 	var v int
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(archived, 0) FROM chat_settings WHERE chat_id = ?`, chatID).Scan(&v)
 	return err == nil && v != 0
 }
 
-// SetChatFavorite toggles the pinned/favorite flag on the chats row.
 func (s *Store) SetChatFavorite(ctx context.Context, chatID string, fav bool) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE chats SET is_pinned = ?, updated_at = ? WHERE id = ?`, boolInt(fav), time.Now().Unix(), chatID)
 	return err
 }
 
-// UpsertChat inserts or updates a chat row.
 func (s *Store) UpsertChat(ctx context.Context, c Chat) error {
 	if c.UpdatedAt == 0 {
 		c.UpdatedAt = time.Now().Unix()
@@ -197,7 +266,6 @@ ON CONFLICT(id) DO UPDATE SET
 	return nil
 }
 
-// TouchChatPreview updates last message preview without wiping other fields.
 func (s *Store) TouchChatPreview(ctx context.Context, chatID, preview string, ts int64, unreadDelta int) error {
 	now := time.Now().Unix()
 	unread := unreadDelta
@@ -219,7 +287,6 @@ ON CONFLICT(id) DO UPDATE SET
 	return nil
 }
 
-// SetChatName updates display name / group flag without touching counters.
 func (s *Store) SetChatName(ctx context.Context, id, name string, isGroup bool) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE chats SET
@@ -230,7 +297,6 @@ WHERE id = ?`, name, name, boolInt(isGroup), time.Now().Unix(), id)
 	return err
 }
 
-// SetChatNameIfEmpty only fills name when the current value is empty.
 func (s *Store) SetChatNameIfEmpty(ctx context.Context, id, name string, isGroup bool) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE chats SET
@@ -241,13 +307,11 @@ WHERE id = ?`, name, boolInt(isGroup), time.Now().Unix(), id)
 	return err
 }
 
-// ClearUnread sets unread_count to 0.
 func (s *Store) ClearUnread(ctx context.Context, chatID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chats SET unread_count = 0, updated_at = ? WHERE id = ?`, time.Now().Unix(), chatID)
 	return err
 }
 
-// SetChatCommunity marks a chat as a WhatsApp community (parent or linked subgroup).
 func (s *Store) SetChatCommunity(ctx context.Context, id string, isCommunity bool) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE chats SET is_community = ?, is_group = CASE WHEN ? != 0 THEN 1 ELSE is_group END, updated_at = ?
@@ -255,7 +319,6 @@ WHERE id = ?`, boolInt(isCommunity), boolInt(isCommunity), time.Now().Unix(), id
 	return err
 }
 
-// GetChat returns one chat or sql.ErrNoRows.
 func (s *Store) GetChat(ctx context.Context, id string) (Chat, error) {
 	var c Chat
 	var isGroup, isPinned, isMuted, archived, isCommunity int
@@ -287,7 +350,6 @@ func boolInt(v bool) int {
 	return 0
 }
 
-// EnsureChatExists creates a minimal chat row if missing.
 func (s *Store) EnsureChatExists(ctx context.Context, id, name string, isGroup bool) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO chats (id, name, is_group, updated_at)
@@ -300,17 +362,14 @@ ON CONFLICT(id) DO NOTHING
 	return nil
 }
 
-// ChatCount is a small helper for tests/metrics.
 func (s *Store) ChatCount(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats`).Scan(&n)
 	return n, err
 }
 
-// DBPing verifies the handle is alive.
 func (s *Store) DBPing(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-// ErrNoRows re-export for callers.
 var ErrNoRows = sql.ErrNoRows

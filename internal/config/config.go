@@ -26,12 +26,12 @@ show_media_previews = true
 # auto | kitty | iterm2 | sixel | halfblocks
 preview_protocol = "auto"
 
-# Optional — https://developers.giphy.com/dashboard/ (leave empty to use local .gif files only)
+# GIF search: auto (Giphy if key set, else local) | giphy | local
+gif_provider = "auto"
+# Optional — https://developers.giphy.com/dashboard/
 giphy_api_key = ""
 `
 
-// RetentionPeriod controls how long local messages/media stay on disk.
-// Canonical forms: "never" | "{n}week(s)" | "{n}month(s)" | "{n}year(s)".
 type RetentionPeriod string
 
 const (
@@ -39,7 +39,6 @@ const (
 	Retention3Months RetentionPeriod = "3months" // default
 )
 
-// RetentionUnit is semana | mes | año.
 type RetentionUnit string
 
 const (
@@ -48,7 +47,6 @@ const (
 	UnitYear  RetentionUnit = "year"
 )
 
-// RetentionPresets shown in the settings modal (custom values also allowed).
 var RetentionPresets = []RetentionPeriod{
 	"1week",
 	"2weeks",
@@ -62,7 +60,6 @@ var RetentionPresets = []RetentionPeriod{
 
 var retentionRe = regexp.MustCompile(`(?i)^\s*(\d+)\s*(w|week|weeks|semana|semanas|m|month|months|mes|meses|y|year|years|año|años|ano|anos)\s*$`)
 
-// PreviewProtocol selects how inline images are drawn.
 type PreviewProtocol string
 
 const (
@@ -73,17 +70,24 @@ const (
 	PreviewHalfblocks PreviewProtocol = "halfblocks"
 )
 
-// Config is the user-facing preferences loaded from config.toml.
+type GIFProvider string
+
+const (
+	GIFProviderAuto  GIFProvider = "auto"
+	GIFProviderGiphy GIFProvider = "giphy"
+	GIFProviderLocal GIFProvider = "local"
+)
+
 type Config struct {
 	Theme             string
 	Mouse             bool
 	LocalRetention    RetentionPeriod
 	ShowMediaPreviews bool
 	PreviewProtocol   PreviewProtocol
-	GiphyAPIKey       string // optional; empty = local GIF files only
+	GIFProvider       GIFProvider
+	GiphyAPIKey       string
 }
 
-// Default returns built-in defaults.
 func Default() Config {
 	return Config{
 		Theme:             "dark",
@@ -91,11 +95,56 @@ func Default() Config {
 		LocalRetention:    Retention3Months,
 		ShowMediaPreviews: true,
 		PreviewProtocol:   PreviewAuto,
+		GIFProvider:       GIFProviderAuto,
 		GiphyAPIKey:       "",
 	}
 }
 
-// FormatRetention builds a canonical period from amount + unit.
+func ParseGIFProvider(s string) GIFProvider {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "giphy":
+		return GIFProviderGiphy
+	case "local", "file", "files", "offline":
+		return GIFProviderLocal
+	default:
+		return GIFProviderAuto
+	}
+}
+
+func CycleGIFProvider(p GIFProvider) GIFProvider {
+	switch ParseGIFProvider(string(p)) {
+	case GIFProviderAuto:
+		return GIFProviderGiphy
+	case GIFProviderGiphy:
+		return GIFProviderLocal
+	default:
+		return GIFProviderAuto
+	}
+}
+
+func (p GIFProvider) Label() string {
+	switch ParseGIFProvider(string(p)) {
+	case GIFProviderGiphy:
+		return "giphy"
+	case GIFProviderLocal:
+		return "local"
+	default:
+		return "auto"
+	}
+}
+
+func (c Config) GIFSearchOnline() bool {
+	key := strings.TrimSpace(c.GiphyAPIKey)
+	switch ParseGIFProvider(string(c.GIFProvider)) {
+	case GIFProviderLocal:
+		return false
+	case GIFProviderGiphy:
+		return key != ""
+	default: // auto
+		return key != ""
+	}
+}
+
 func FormatRetention(n int, unit RetentionUnit) RetentionPeriod {
 	if n <= 0 {
 		return RetentionNever
@@ -121,7 +170,6 @@ func FormatRetention(n int, unit RetentionUnit) RetentionPeriod {
 	}
 }
 
-// ParseRetention normalizes a config value; unknown → 3months.
 func ParseRetention(s string) RetentionPeriod {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
@@ -144,11 +192,8 @@ func ParseRetention(s string) RetentionPeriod {
 		unit := parseUnitToken(m[2])
 		return FormatRetention(n, unit)
 	}
-	// Already canonical-ish: 3months, 2weeks, …
 	if m := retentionRe.FindStringSubmatch(s + "s"); len(m) == 3 {
-		// no-op fallback
 	}
-	// Accept bare "3months" without regex unit quirks
 	for _, suf := range []string{"weeks", "week", "months", "month", "years", "year"} {
 		if strings.HasSuffix(s, suf) {
 			num := strings.TrimSuffix(s, suf)
@@ -173,7 +218,6 @@ func parseUnitToken(tok string) RetentionUnit {
 	}
 }
 
-// Parts splits a period into amount + unit. never → (0, "").
 func (r RetentionPeriod) Parts() (n int, unit RetentionUnit, never bool) {
 	r = ParseRetention(string(r))
 	if r == RetentionNever {
@@ -198,7 +242,6 @@ func (r RetentionPeriod) Parts() (n int, unit RetentionUnit, never bool) {
 	return 3, UnitMonth, false
 }
 
-// Duration returns how long to keep local data. ok=false means never purge.
 func (r RetentionPeriod) Duration() (d time.Duration, ok bool) {
 	n, unit, never := ParseRetention(string(r)).Parts()
 	if never {
@@ -217,7 +260,6 @@ func (r RetentionPeriod) Duration() (d time.Duration, ok bool) {
 	}
 }
 
-// Label is a short Spanish label for UI/logs.
 func (r RetentionPeriod) Label() string {
 	n, unit, never := ParseRetention(string(r)).Parts()
 	if never {
@@ -244,12 +286,10 @@ func (r RetentionPeriod) Label() string {
 	}
 }
 
-// EqualRetention compares normalized periods.
 func EqualRetention(a, b RetentionPeriod) bool {
 	return ParseRetention(string(a)) == ParseRetention(string(b))
 }
 
-// ParsePreviewProtocol normalizes preview_protocol; unknown → auto.
 func ParsePreviewProtocol(s string) PreviewProtocol {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "kitty":
@@ -265,7 +305,6 @@ func ParsePreviewProtocol(s string) PreviewProtocol {
 	}
 }
 
-// EnsureDefault writes a minimal config.toml if it does not exist.
 func EnsureDefault(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
@@ -278,7 +317,6 @@ func EnsureDefault(path string) error {
 	return nil
 }
 
-// Load reads config.toml (best-effort key=value TOML subset).
 func Load(path string) (Config, error) {
 	cfg := Default()
 	f, err := os.Open(path)
@@ -320,6 +358,8 @@ func Load(path string) (Config, error) {
 			}
 		case "preview_protocol", "image_protocol":
 			cfg.PreviewProtocol = ParsePreviewProtocol(val)
+		case "gif_provider", "gif_source":
+			cfg.GIFProvider = ParseGIFProvider(val)
 		case "giphy_api_key", "giphy_key":
 			cfg.GiphyAPIKey = val
 		}
@@ -330,13 +370,13 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// Save writes preferences back to config.toml (overwrites file).
 func Save(path string, cfg Config) error {
 	if cfg.Theme == "" {
 		cfg.Theme = "dark"
 	}
 	cfg.LocalRetention = ParseRetention(string(cfg.LocalRetention))
 	cfg.PreviewProtocol = ParsePreviewProtocol(string(cfg.PreviewProtocol))
+	cfg.GIFProvider = ParseGIFProvider(string(cfg.GIFProvider))
 	body := fmt.Sprintf(
 		`# wsp-tui — WhatsApp en la terminal
 # https://github.com/efolchmontiel/wsp-tui
@@ -353,13 +393,14 @@ show_media_previews = %v
 # auto | kitty | iterm2 | sixel | halfblocks
 preview_protocol = %q
 
-# Optional Giphy search (https://developers.giphy.com/dashboard/)
-# Leave empty to pick local .gif files only.
+# GIF search: auto (Giphy if key set, else local) | giphy | local
+gif_provider = %q
+# Optional — https://developers.giphy.com/dashboard/
 giphy_api_key = %q
 `,
 		cfg.Theme, cfg.Mouse, string(cfg.LocalRetention),
 		cfg.ShowMediaPreviews, string(cfg.PreviewProtocol),
-		cfg.GiphyAPIKey,
+		string(cfg.GIFProvider), cfg.GiphyAPIKey,
 	)
 	return os.WriteFile(path, []byte(body), 0o600)
 }

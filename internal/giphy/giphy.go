@@ -8,18 +8,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
 const searchURL = "https://api.giphy.com/v1/gifs/search"
 
-// Result is one GIF from a Giphy search.
 type Result struct {
-	ID    string
-	Title string
-	URL   string // downloadable GIF URL
+	ID         string
+	Title      string
+	URL        string // downloadable GIF URL
+	PreviewURL string // still/small preview for TUI
 }
 
 type searchResponse struct {
@@ -36,6 +35,15 @@ type searchResponse struct {
 			FixedWidth struct {
 				URL string `json:"url"`
 			} `json:"fixed_width"`
+			FixedHeight struct {
+				URL string `json:"url"`
+			} `json:"fixed_height"`
+			FixedWidthStill struct {
+				URL string `json:"url"`
+			} `json:"fixed_width_still"`
+			DownsizedStill struct {
+				URL string `json:"url"`
+			} `json:"downsized_still"`
 		} `json:"images"`
 	} `json:"data"`
 	Meta struct {
@@ -44,7 +52,6 @@ type searchResponse struct {
 	} `json:"meta"`
 }
 
-// Search queries Giphy. apiKey is required; empty → error.
 func Search(ctx context.Context, apiKey, query string, limit int) ([]Result, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	query = strings.TrimSpace(query)
@@ -102,17 +109,34 @@ func Search(ctx context.Context, apiKey, query string, limit int) ([]Result, err
 		if gifURL == "" {
 			continue
 		}
+		// Prefer an animated fixed-size GIF for TUI preview (clearer than tiny stills).
+		previewURL := d.Images.FixedHeight.URL
+		if previewURL == "" {
+			previewURL = d.Images.FixedWidth.URL
+		}
+		if previewURL == "" {
+			previewURL = d.Images.FixedWidthStill.URL
+		}
+		if previewURL == "" {
+			previewURL = d.Images.DownsizedStill.URL
+		}
+		if previewURL == "" {
+			previewURL = gifURL
+		}
 		title := strings.TrimSpace(d.Title)
 		if title == "" {
 			title = d.ID
 		}
-		out = append(out, Result{ID: d.ID, Title: title, URL: gifURL})
+		out = append(out, Result{
+			ID:         d.ID,
+			Title:      title,
+			URL:        gifURL,
+			PreviewURL: previewURL,
+		})
 	}
 	return out, nil
 }
 
-// ValidateKey checks whether a Giphy API key is accepted by the API.
-// Empty key is considered "cleared" (ok=true, valid=false meaning unused).
 func ValidateKey(ctx context.Context, apiKey string) (valid bool, err error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
@@ -146,7 +170,7 @@ func ValidateKey(ctx context.Context, apiKey string) (valid bool, err error) {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return false, fmt.Errorf("API key inválida o rechazada")
 	case http.StatusTooManyRequests:
-		return false, fmt.Errorf("rate limit de Giphy — reintentá en un rato")
+		return false, fmt.Errorf("rate limit de Giphy — reintenta en un rato")
 	}
 	var parsed searchResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -167,7 +191,6 @@ func ValidateKey(ctx context.Context, apiKey string) (valid bool, err error) {
 	return true, nil
 }
 
-// DownloadToTemp fetches a GIF URL into a temp .gif file. Caller should remove it.
 func DownloadToTemp(ctx context.Context, gifURL string) (string, error) {
 	gifURL = strings.TrimSpace(gifURL)
 	if gifURL == "" {
@@ -186,7 +209,17 @@ func DownloadToTemp(ctx context.Context, gifURL string) (string, error) {
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return "", fmt.Errorf("download HTTP %d", res.StatusCode)
 	}
-	f, err := os.CreateTemp("", "wsp-tui-giphy-*.gif")
+	ext := ".gif"
+	lower := strings.ToLower(gifURL)
+	switch {
+	case strings.Contains(lower, ".webp"):
+		ext = ".webp"
+	case strings.Contains(lower, ".png"):
+		ext = ".png"
+	case strings.Contains(lower, ".jpg"), strings.Contains(lower, ".jpeg"):
+		ext = ".jpg"
+	}
+	f, err := os.CreateTemp("", "wsp-tui-giphy-*"+ext)
 	if err != nil {
 		return "", err
 	}
@@ -200,9 +233,6 @@ func DownloadToTemp(ctx context.Context, gifURL string) (string, error) {
 	if closeErr != nil {
 		_ = os.Remove(path)
 		return "", closeErr
-	}
-	if ext := strings.ToLower(filepath.Ext(path)); ext != ".gif" {
-		// CreateTemp already ends in .gif
 	}
 	return path, nil
 }

@@ -23,15 +23,12 @@ import (
 
 const maxInlineUploadBytes = 8 << 20 // 8 MiB — larger files use UploadReader
 
-// SetMedia wires the filesystem media manager.
 func (e *Engine) SetMedia(m *media.Manager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.media = m
 }
 
-// SendFile uploads a local file and sends it as image/video/audio/document.
-// Returns an optimistic local message immediately; network work runs async.
 func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (store.Message, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -64,9 +61,9 @@ func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (st
 	msgType, waType, mimeType := media.ClassifyPath(path)
 	fileName := filepath.Base(path)
 	size := st.Size()
+	gifPlayback := false
+	var jpegThumb []byte
 
-	// Persist under the media tree before async upload. Callers may pass /tmp
-	// paths (e.g. Giphy) that disappear after SendFile returns.
 	perm, copyErr := mgr.AllocPath(msgType, fileName)
 	if copyErr != nil {
 		return store.Message{}, copyErr
@@ -76,7 +73,37 @@ func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (st
 	}
 	path = perm
 	fileName = filepath.Base(path)
-	if st2, err := os.Stat(path); err == nil {
+
+	localPath := path
+	uploadPath := path
+	uploadName := fileName
+	uploadMIME := mimeType
+
+	// WhatsApp shows animated GIFs only as VideoMessage + GifPlayback (MP4).
+	// Keep the original GIF on disk for TUI halfblocks preview.
+	if media.IsGIFPath(path) {
+		mp4, err := mgr.AllocPath(store.TypeVideo, strings.TrimSuffix(fileName, filepath.Ext(fileName))+".mp4")
+		if err != nil {
+			return store.Message{}, err
+		}
+		if err := media.ConvertGIFToMP4(path, mp4); err != nil {
+			return store.Message{}, err
+		}
+		thumbPath := mp4 + ".jpg"
+		if err := media.JPEGThumbFromMedia(path, thumbPath); err == nil {
+			jpegThumb, _ = os.ReadFile(thumbPath)
+			_ = os.Remove(thumbPath)
+		}
+		uploadPath = mp4
+		uploadName = filepath.Base(mp4)
+		uploadMIME = "video/mp4"
+		msgType = store.TypeVideo
+		waType = whatsmeow.MediaVideo
+		mimeType = "image/gif"
+		gifPlayback = true
+	}
+
+	if st2, err := os.Stat(uploadPath); err == nil {
 		size = st2.Size()
 	}
 
@@ -85,7 +112,14 @@ func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (st
 	now := time.Now()
 	caption = strings.TrimSpace(caption)
 
-	label := mediaLabel(msgType, fileName, uint64(size), caption)
+	labelName := fileName
+	if gifPlayback {
+		labelName = filepath.Base(localPath)
+	}
+	label := mediaLabel(msgType, labelName, uint64(size), caption)
+	if gifPlayback {
+		label = mediaLabel("gif", labelName, uint64(size), caption)
+	}
 	msg := store.Message{
 		ID:        string(id),
 		ChatID:    chatID,
@@ -110,9 +144,9 @@ func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (st
 			ChatID:        chatID,
 			MessageID:     string(id),
 			MimeType:      mimeType,
-			FileName:      fileName,
+			FileName:      filepath.Base(localPath),
 			SizeBytes:     size,
-			LocalPath:     path,
+			LocalPath:     localPath,
 			DownloadState: store.MediaReady,
 		})
 		_ = e.store.TouchChatPreview(ctx, chatID, msgutil.Preview(label, 80), msg.Timestamp, 0)
@@ -121,9 +155,9 @@ func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (st
 	cp := msg
 	e.bus.Publish(app.Event{Kind: app.EventMessageUpserted, Msg: &cp, ChatID: chatID})
 	e.bus.Publish(app.Event{Kind: app.EventChatsDirty})
-	e.bus.Publish(app.Event{Kind: app.EventUploadProgress, ChatID: chatID, MediaID: mediaID, Progress: 5, Message: "Subiendo " + fileName + "…"})
+	e.bus.Publish(app.Event{Kind: app.EventUploadProgress, ChatID: chatID, MediaID: mediaID, Progress: 5, Message: "Subiendo " + uploadName + "…"})
 
-	go e.uploadAndSend(client, jid, chatID, string(id), mediaID, path, fileName, mimeType, caption, msgType, waType, size)
+	go e.uploadAndSend(client, jid, chatID, string(id), mediaID, uploadPath, uploadName, uploadMIME, caption, msgType, waType, size, gifPlayback, jpegThumb)
 
 	return msg, nil
 }
@@ -134,6 +168,8 @@ func (e *Engine) uploadAndSend(
 	chatID, msgID, mediaID, path, fileName, mimeType, caption, msgType string,
 	waType whatsmeow.MediaType,
 	size int64,
+	gifPlayback bool,
+	jpegThumb []byte,
 ) {
 	sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -165,7 +201,7 @@ func (e *Engine) uploadAndSend(
 
 	e.bus.Publish(app.Event{Kind: app.EventUploadProgress, ChatID: chatID, MediaID: mediaID, Progress: 80, Message: "Enviando…"})
 
-	waMsg := buildMediaMessage(msgType, mimeType, fileName, caption, resp)
+	waMsg := buildMediaMessage(msgType, mimeType, fileName, caption, resp, gifPlayback, jpegThumb)
 	_, err = client.SendMessage(sendCtx, jid, waMsg, whatsmeow.SendRequestExtra{ID: types.MessageID(msgID)})
 	if err != nil {
 		e.failSend(chatID, msgID, mediaID, err)
@@ -205,7 +241,7 @@ func (e *Engine) failSend(chatID, msgID, mediaID string, err error) {
 	})
 }
 
-func buildMediaMessage(msgType, mimeType, fileName, caption string, resp whatsmeow.UploadResponse) *waE2E.Message {
+func buildMediaMessage(msgType, mimeType, fileName, caption string, resp whatsmeow.UploadResponse, gifPlayback bool, jpegThumb []byte) *waE2E.Message {
 	switch msgType {
 	case store.TypeImage:
 		im := &waE2E.ImageMessage{
@@ -220,6 +256,9 @@ func buildMediaMessage(msgType, mimeType, fileName, caption string, resp whatsme
 		if caption != "" {
 			im.Caption = proto.String(caption)
 		}
+		if len(jpegThumb) > 0 {
+			im.JPEGThumbnail = jpegThumb
+		}
 		return &waE2E.Message{ImageMessage: im}
 	case store.TypeVideo:
 		vm := &waE2E.VideoMessage{
@@ -231,8 +270,15 @@ func buildMediaMessage(msgType, mimeType, fileName, caption string, resp whatsme
 			FileLength:    proto.Uint64(resp.FileLength),
 			Mimetype:      proto.String(mimeType),
 		}
+		if gifPlayback {
+			vm.GifPlayback = proto.Bool(true)
+			vm.Mimetype = proto.String("video/mp4")
+		}
 		if caption != "" {
 			vm.Caption = proto.String(caption)
+		}
+		if len(jpegThumb) > 0 {
+			vm.JPEGThumbnail = jpegThumb
 		}
 		return &waE2E.Message{VideoMessage: vm}
 	case store.TypeAudio:
@@ -263,7 +309,6 @@ func buildMediaMessage(msgType, mimeType, fileName, caption string, resp whatsme
 	}
 }
 
-// DownloadMedia downloads an attachment on demand (async). Returns immediately.
 func (e *Engine) DownloadMedia(mediaID string) error {
 	e.mu.Lock()
 	mgr := e.media
@@ -331,8 +376,6 @@ func (e *Engine) downloadMediaAsync(mediaID string) {
 	e.bus.Publish(app.Event{Kind: app.EventMediaUpdated, MediaID: mediaID, Status: store.MediaReady, LocalPath: dest, Message: "Listo"})
 }
 
-// OpenMedia opens a ready local file externally (mpv / xdg-open). Downloads first if needed.
-// Audio/video: exclusive — same clip while playing is a no-op; a different clip stops the previous.
 func (e *Engine) OpenMedia(mediaID string) error {
 	if mediaID == "" {
 		return fmt.Errorf("empty media id")
@@ -428,7 +471,6 @@ func (e *Engine) OpenMedia(mediaID string) error {
 	return nil
 }
 
-// stopPlaybackLocked kills the current mpv process. Caller must hold playMu.
 func (e *Engine) stopPlaybackLocked() {
 	if e.playCmd == nil || e.playCmd.Process == nil {
 		e.playCmd = nil
@@ -448,7 +490,6 @@ func (e *Engine) stopPlaybackLocked() {
 	}()
 }
 
-// StopPlayback stops any current audio/video playback (no-op if idle).
 func (e *Engine) StopPlayback() {
 	e.playMu.Lock()
 	defer e.playMu.Unlock()
@@ -459,6 +500,8 @@ func (e *Engine) StopPlayback() {
 func mediaLabel(msgType, fileName string, size uint64, caption string) string {
 	prefix := "file"
 	switch msgType {
+	case "gif":
+		prefix = "gif"
 	case store.TypeImage:
 		prefix = "img"
 	case store.TypeVideo:
@@ -475,8 +518,6 @@ func mediaLabel(msgType, fileName string, size uint64, caption string) string {
 	return base
 }
 
-// RequestMessageResend asks the primary phone to re-send a message body
-// (used when we stored a media placeholder without download keys).
 func (e *Engine) RequestMessageResend(ctx context.Context, chatID, sender, messageID string) error {
 	e.mu.Lock()
 	client := e.client

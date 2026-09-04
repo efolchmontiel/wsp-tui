@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -90,8 +91,9 @@ func (m *Manager) DownloadRefToFile(ctx context.Context, ref DownloadRef, destPa
 	return client.DownloadToFile(ctx, dl, f)
 }
 
-// OpenExternal opens a local file with mpv (av) or xdg-open (docs/images).
-// For audio/video it returns the running mpv process so the UI can animate.
+// OpenExternal opens a local file with the platform default viewer.
+// Audio/video use mpv when available; images/docs use the OS opener
+// (xdg-open on Linux, rundll32 on Windows, open on macOS).
 func OpenExternal(path, kind string) (*exec.Cmd, error) {
 	if path == "" {
 		return nil, fmt.Errorf("no local file")
@@ -110,14 +112,32 @@ func OpenExternal(path, kind string) (*exec.Cmd, error) {
 		}
 		return cmd, nil
 	default:
+		return openDocument(path)
+	}
+}
+
+func openDocument(path string) (*exec.Cmd, error) {
+	cmd, err := documentOpenCmd(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return cmd, nil
+}
+
+func documentOpenCmd(path string) (*exec.Cmd, error) {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", path), nil
+	case "darwin":
+		return exec.Command("open", path), nil
+	default:
 		if _, err := exec.LookPath("xdg-open"); err != nil {
 			return nil, fmt.Errorf("xdg-open no disponible")
 		}
-		cmd := exec.Command("xdg-open", path)
-		if err := cmd.Start(); err != nil {
-			return nil, err
-		}
-		return cmd, nil
+		return exec.Command("xdg-open", path), nil
 	}
 }
 

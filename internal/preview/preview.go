@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -12,17 +13,19 @@ import (
 	"sync"
 
 	"github.com/blacktop/go-termimg"
+	"github.com/charmbracelet/x/mosaic"
 	"github.com/efolchmontiel/wsp-tui/internal/config"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
-// Defaults for inline previews in the transcript.
 const (
-	DefaultWidth  = 36
-	DefaultHeight = 12
+	DefaultWidth  = 56
+	DefaultHeight = 22
+	PickerWidth   = 48
+	PickerHeight  = 18
 )
 
-// ProtocolFromConfig maps config → termimg protocol.
 func ProtocolFromConfig(p config.PreviewProtocol) termimg.Protocol {
 	switch config.ParsePreviewProtocol(string(p)) {
 	case config.PreviewKitty:
@@ -38,23 +41,67 @@ func ProtocolFromConfig(p config.PreviewProtocol) termimg.Protocol {
 	}
 }
 
+func Halfblocks() termimg.Protocol {
+	return termimg.Halfblocks
+}
+
 var (
+	detectOnce sync.Once
+	detected   termimg.Protocol = termimg.Halfblocks
+
 	cacheMu sync.Mutex
-	cache   = map[string]string{} // key → rendered
+	cache   = map[string]string{}
+
+	gifMu    sync.Mutex
+	gifCache = map[string]*gif.GIF{}
 )
+
+// TUIProtocol picks the best in-TUI protocol. Kitty (Unicode placeholders) matches
+// Concord-quality on Kitty/Ghostty/WezTerm; otherwise mosaic half/quarter blocks.
+func TUIProtocol(cfg config.PreviewProtocol) termimg.Protocol {
+	switch config.ParsePreviewProtocol(string(cfg)) {
+	case config.PreviewHalfblocks:
+		return termimg.Halfblocks
+	case config.PreviewKitty:
+		return termimg.Kitty
+	case config.PreviewITerm2:
+		return termimg.ITerm2
+	case config.PreviewSixel:
+		return termimg.Sixel
+	default:
+		detectOnce.Do(func() {
+			if termimg.KittySupported() {
+				detected = termimg.Kitty
+			} else {
+				detected = termimg.Halfblocks
+			}
+		})
+		return detected
+	}
+}
+
+func IsNative(proto termimg.Protocol) bool {
+	return proto == termimg.Kitty || proto == termimg.ITerm2 || proto == termimg.Sixel
+}
 
 func cacheKey(path string, w, h, frame int, proto termimg.Protocol) string {
 	return fmt.Sprintf("%s|%d|%d|%d|%d", path, w, h, frame, proto)
 }
 
-// ClearCache drops rendered previews (call on theme/protocol change).
 func ClearCache() {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 	cache = map[string]string{}
+	gifMu.Lock()
+	defer gifMu.Unlock()
+	gifCache = map[string]*gif.GIF{}
 }
 
-// RenderFile renders a still image (or GIF frame 0) as terminal graphics.
+func ClearGraphics() {
+	ClearCache()
+	_ = termimg.ClearAll()
+}
+
 func RenderFile(path string, width, height int, proto termimg.Protocol) (string, error) {
 	if width <= 0 {
 		width = DefaultWidth
@@ -74,20 +121,9 @@ func RenderFile(path string, width, height int, proto termimg.Protocol) (string,
 	if err != nil {
 		return "", err
 	}
-	img = fitImage(img, width*2, height*2) // rough pixel budget for protocols
-	widget := termimg.NewImageWidgetFromImage(img).
-		SetSize(width, height).
-		SetProtocol(proto)
-	out, err := widget.Render()
+	out, err := renderImage(img, width, height, proto)
 	if err != nil {
-		// Last resort: halfblocks
-		widget = termimg.NewImageWidgetFromImage(img).
-			SetSize(width, height).
-			SetProtocol(termimg.Halfblocks)
-		out, err = widget.Render()
-		if err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	cacheMu.Lock()
 	cache[key] = out
@@ -95,7 +131,6 @@ func RenderFile(path string, width, height int, proto termimg.Protocol) (string,
 	return out, nil
 }
 
-// RenderGIFFrame renders one GIF frame (for animation). frame wraps by modulo.
 func RenderGIFFrame(path string, width, height, frame int, proto termimg.Protocol) (string, error) {
 	if width <= 0 {
 		width = DefaultWidth
@@ -103,13 +138,16 @@ func RenderGIFFrame(path string, width, height, frame int, proto termimg.Protoco
 	if height <= 0 {
 		height = DefaultHeight
 	}
-	g, err := loadGIF(path)
+	g, err := loadGIFCached(path)
 	if err != nil {
-		// Not a GIF — still image path
 		return RenderFile(path, width, height, proto)
 	}
 	if len(g.Image) == 0 {
 		return "", fmt.Errorf("gif vacío")
+	}
+	// Native graphics: still frame only (animating Kitty every tick breaks the TUI).
+	if IsNative(proto) {
+		frame = 0
 	}
 	if frame < 0 {
 		frame = 0
@@ -123,19 +161,10 @@ func RenderGIFFrame(path string, width, height, frame int, proto termimg.Protoco
 	}
 	cacheMu.Unlock()
 
-	img := fitImage(g.Image[frame], width*2, height*2)
-	widget := termimg.NewImageWidgetFromImage(img).
-		SetSize(width, height).
-		SetProtocol(proto)
-	out, err := widget.Render()
+	img := compositeGIFFrame(g, frame)
+	out, err := renderImage(img, width, height, proto)
 	if err != nil {
-		widget = termimg.NewImageWidgetFromImage(img).
-			SetSize(width, height).
-			SetProtocol(termimg.Halfblocks)
-		out, err = widget.Render()
-		if err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	cacheMu.Lock()
 	cache[key] = out
@@ -143,9 +172,69 @@ func RenderGIFFrame(path string, width, height, frame int, proto termimg.Protoco
 	return out, nil
 }
 
-// GIFFrameCount returns how many frames a GIF has (0 if not a GIF).
+func renderImage(img image.Image, width, height int, proto termimg.Protocol) (string, error) {
+	if img == nil {
+		return "", fmt.Errorf("imagen vacía")
+	}
+	switch proto {
+	case termimg.Kitty:
+		ti := termimg.New(img).
+			Protocol(termimg.Kitty).
+			UseUnicode(true).
+			Width(width).
+			Height(height).
+			Scale(termimg.ScaleFit)
+		out, err := ti.Render()
+		if err == nil && hasVisibleCells(out) {
+			return out, nil
+		}
+	case termimg.ITerm2, termimg.Sixel:
+		widget := termimg.NewImageWidgetFromImage(img).
+			SetSize(width, height).
+			SetProtocol(proto)
+		out, err := widget.Render()
+		if err == nil && hasVisibleCells(out) {
+			return out, nil
+		}
+	}
+
+	m := mosaic.New().
+		Width(width).
+		Height(height).
+		Symbol(mosaic.All).
+		Dither(true)
+	out := m.Render(img)
+	if !hasVisibleCells(out) {
+		return "", fmt.Errorf("render vacío")
+	}
+	return out, nil
+}
+
+// hasVisibleCells is true when s has glyphs after stripping terminal escapes.
+// APC-only Kitty/Sixel payloads look non-empty to TrimSpace but paint blank
+// inside Bubble Tea's alt-screen.
+func hasVisibleCells(s string) bool {
+	inEsc := false
+	for _, r := range s {
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 0x40 && r <= 0x7e) || r == '\a' {
+				inEsc = false
+			}
+			continue
+		}
+		if r > ' ' && r != '\u00a0' {
+			return true
+		}
+	}
+	return false
+}
+
 func GIFFrameCount(path string) int {
-	g, err := loadGIF(path)
+	g, err := loadGIFCached(path)
 	if err != nil || g == nil {
 		return 0
 	}
@@ -162,6 +251,24 @@ func loadStill(path string) (image.Image, error) {
 	return img, err
 }
 
+func loadGIFCached(path string) (*gif.GIF, error) {
+	gifMu.Lock()
+	if g, ok := gifCache[path]; ok {
+		gifMu.Unlock()
+		return g, nil
+	}
+	gifMu.Unlock()
+
+	g, err := loadGIF(path)
+	if err != nil {
+		return nil, err
+	}
+	gifMu.Lock()
+	gifCache[path] = g
+	gifMu.Unlock()
+	return g, nil
+}
+
 func loadGIF(path string) (*gif.GIF, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -171,45 +278,78 @@ func loadGIF(path string) (*gif.GIF, error) {
 	return gif.DecodeAll(f)
 }
 
-func fitImage(src image.Image, maxW, maxH int) image.Image {
-	if src == nil || maxW <= 0 || maxH <= 0 {
-		return src
+func compositeGIFFrame(g *gif.GIF, frame int) image.Image {
+	if g == nil || len(g.Image) == 0 {
+		return nil
 	}
-	b := src.Bounds()
-	sw, sh := b.Dx(), b.Dy()
-	if sw <= maxW && sh <= maxH {
-		return src
+	if frame < 0 {
+		frame = 0
 	}
-	scale := float64(maxW) / float64(sw)
-	if s2 := float64(maxH) / float64(sh); s2 < scale {
-		scale = s2
+	if frame >= len(g.Image) {
+		frame = len(g.Image) - 1
 	}
-	dw := int(float64(sw) * scale)
-	dh := int(float64(sh) * scale)
-	if dw < 1 {
-		dw = 1
+
+	w, h := g.Config.Width, g.Config.Height
+	if w <= 0 || h <= 0 {
+		b := g.Image[0].Bounds()
+		w, h = b.Max.X, b.Max.Y
 	}
-	if dh < 1 {
-		dh = 1
+	canvas := image.NewRGBA(image.Rect(0, 0, w, h))
+	var backup *image.RGBA
+
+	bg := color.RGBA{}
+	if pal, ok := g.Config.ColorModel.(color.Palette); ok && int(g.BackgroundIndex) < len(pal) {
+		if c, ok := pal[g.BackgroundIndex].(color.RGBA); ok {
+			bg = c
+		} else {
+			r, g2, b, a := pal[g.BackgroundIndex].RGBA()
+			bg = color.RGBA{uint8(r >> 8), uint8(g2 >> 8), uint8(b >> 8), uint8(a >> 8)}
+		}
 	}
-	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), src, b, draw.Over, nil)
-	return dst
+
+	for i := 0; i <= frame; i++ {
+		fr := g.Image[i]
+		fb := fr.Bounds()
+
+		disposal := byte(0)
+		if i > 0 && g.Disposal != nil && i-1 < len(g.Disposal) {
+			disposal = g.Disposal[i-1]
+		}
+		if i > 0 {
+			prev := g.Image[i-1]
+			pb := prev.Bounds()
+			switch disposal {
+			case gif.DisposalBackground:
+				draw.Draw(canvas, pb, &image.Uniform{bg}, image.Point{}, draw.Src)
+			case gif.DisposalPrevious:
+				if backup != nil {
+					draw.Draw(canvas, canvas.Bounds(), backup, image.Point{}, draw.Src)
+				}
+			}
+		}
+
+		if g.Disposal != nil && i < len(g.Disposal) && g.Disposal[i] == gif.DisposalPrevious {
+			if backup == nil {
+				backup = image.NewRGBA(canvas.Bounds())
+			}
+			draw.Draw(backup, canvas.Bounds(), canvas, image.Point{}, draw.Src)
+		}
+
+		draw.Draw(canvas, fb, fr, fb.Min, draw.Over)
+	}
+	return canvas
 }
 
-// WriteJPEGThumb writes raw JPEG bytes to path (0644 → 0600).
 func WriteJPEGThumb(path string, jpegBytes []byte) error {
 	if len(jpegBytes) == 0 {
 		return fmt.Errorf("empty thumb")
 	}
-	// Validate it's an image.
 	if _, _, err := image.Decode(bytes.NewReader(jpegBytes)); err != nil {
 		return err
 	}
 	return os.WriteFile(path, jpegBytes, 0o600)
 }
 
-// FormatLinkCard builds the text block for a link embed (without image).
 func FormatLinkCard(title, desc, url string, mutedStyle func(string) string) string {
 	var b strings.Builder
 	b.WriteString("│ ")

@@ -41,34 +41,66 @@ func (m *Model) openGiphyKeyModal() {
 
 func (m Model) viewGiphyKeyModal() string {
 	var b strings.Builder
-	b.WriteString(m.theme.title.Render("Giphy API key"))
+	b.WriteString(m.theme.title.Render("GIF / Giphy"))
 	b.WriteString("\n")
-	b.WriteString(m.theme.muted.Render("Opcional. Vacío = solo archivos .gif locales."))
-	b.WriteString("\n")
-	b.WriteString(m.theme.muted.Render("https://developers.giphy.com/dashboard/"))
+	b.WriteString(m.theme.muted.Render("Proveedor: Tab cicla · auto = Giphy si hay key, si no local"))
 	b.WriteString("\n\n")
 
-	cur := strings.TrimSpace(m.cfg.GiphyAPIKey)
-	if cur == "" {
-		b.WriteString(m.theme.muted.Render("Estado actual: sin key"))
-	} else {
-		b.WriteString(m.theme.accent.Render("Estado actual: " + maskAPIKey(cur)))
+	prov := config.ParseGIFProvider(string(m.cfg.GIFProvider))
+	for _, p := range []config.GIFProvider{config.GIFProviderAuto, config.GIFProviderGiphy, config.GIFProviderLocal} {
+		label := p.Label()
+		if p == prov {
+			b.WriteString(m.theme.accent.Bold(true).Render("[" + label + "]"))
+		} else {
+			b.WriteString(m.theme.muted.Render(label))
+		}
+		b.WriteString("  ")
 	}
 	b.WriteString("\n\n")
-	b.WriteString(m.giphyKeyInput.View())
+
+	switch prov {
+	case config.GIFProviderLocal:
+		b.WriteString(m.theme.muted.Render("Modo local: solo archivos .gif del disco (sin búsqueda online)."))
+	case config.GIFProviderGiphy:
+		b.WriteString(m.theme.muted.Render("Modo giphy: hace falta API key."))
+		b.WriteString("\n")
+		b.WriteString(m.theme.muted.Render("https://developers.giphy.com/dashboard/"))
+	default:
+		b.WriteString(m.theme.muted.Render("Modo auto: con key busca en Giphy; sin key usa archivo local."))
+		b.WriteString("\n")
+		b.WriteString(m.theme.muted.Render("https://developers.giphy.com/dashboard/"))
+	}
 	b.WriteString("\n\n")
+
+	if prov != config.GIFProviderLocal {
+		cur := strings.TrimSpace(m.cfg.GiphyAPIKey)
+		if cur == "" {
+			b.WriteString(m.theme.muted.Render("Key actual: (vacía)"))
+		} else {
+			b.WriteString(m.theme.accent.Render("Key actual: " + maskAPIKey(cur)))
+		}
+		b.WriteString("\n\n")
+		b.WriteString(m.giphyKeyInput.View())
+		b.WriteString("\n\n")
+	}
 
 	switch {
 	case m.giphyKeyBusy:
 		b.WriteString(m.theme.accent.Render("Validando con Giphy…"))
 	case m.giphyKeyStatus != "":
-		if strings.HasPrefix(m.giphyKeyStatus, "OK") || strings.HasPrefix(m.giphyKeyStatus, "Key borrada") {
+		if strings.HasPrefix(m.giphyKeyStatus, "OK") ||
+			strings.HasPrefix(m.giphyKeyStatus, "Key borrada") ||
+			strings.HasPrefix(m.giphyKeyStatus, "Proveedor") {
 			b.WriteString(m.theme.accent.Render(m.giphyKeyStatus))
 		} else {
 			b.WriteString(m.theme.statusErr.Render(m.giphyKeyStatus))
 		}
 	default:
-		b.WriteString(m.theme.muted.Render("Enter valida y guarda · Ctrl+U borra · Esc cierra"))
+		if prov == config.GIFProviderLocal {
+			b.WriteString(m.theme.muted.Render("Tab cambia proveedor · Esc cierra (ya guardado)"))
+		} else {
+			b.WriteString(m.theme.muted.Render("Enter valida/guarda key · Ctrl+U borra · Tab proveedor · Esc cierra"))
+		}
 	}
 
 	box := m.theme.box.Width(max(48, min(m.width-4, 68)))
@@ -97,7 +129,22 @@ func (m Model) updateGiphyKeyModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
+	case "tab", "shift+tab":
+		m.cfg.GIFProvider = config.CycleGIFProvider(m.cfg.GIFProvider)
+		if m.cfgPath != "" {
+			_ = config.Save(m.cfgPath, m.cfg)
+		}
+		m.giphyKeyStatus = "Proveedor: " + m.cfg.GIFProvider.Label()
+		if config.ParseGIFProvider(string(m.cfg.GIFProvider)) == config.GIFProviderLocal {
+			m.giphyKeyInput.Blur()
+		} else {
+			m.giphyKeyInput.Focus()
+		}
+		return m, nil
 	case "ctrl+u":
+		if config.ParseGIFProvider(string(m.cfg.GIFProvider)) == config.GIFProviderLocal {
+			return m, nil
+		}
 		m.giphyKeyInput.SetValue("")
 		m.giphyKeyStatus = ""
 		return m, nil
@@ -105,7 +152,15 @@ func (m Model) updateGiphyKeyModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.giphyKeyBusy {
 			return m, nil
 		}
+		if config.ParseGIFProvider(string(m.cfg.GIFProvider)) == config.GIFProviderLocal {
+			m.modal = modalNone
+			m.giphyKeyInput.Blur()
+			return m, nil
+		}
 		return m.saveGiphyKeyFromModal()
+	}
+	if config.ParseGIFProvider(string(m.cfg.GIFProvider)) == config.GIFProviderLocal {
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.giphyKeyInput, cmd = m.giphyKeyInput.Update(msg)
@@ -119,8 +174,8 @@ func (m Model) saveGiphyKeyFromModal() (tea.Model, tea.Cmd) {
 		if m.cfgPath != "" {
 			_ = config.Save(m.cfgPath, m.cfg)
 		}
-		m.giphyKeyStatus = "Key borrada — GIF solo por archivo local"
-		m.setInfo("Giphy: sin API key")
+		m.giphyKeyStatus = "Key borrada — sin búsqueda online (auto/local)"
+		m.setInfo("GIF: sin API key")
 		return m, nil
 	}
 	m.giphyKeyBusy = true

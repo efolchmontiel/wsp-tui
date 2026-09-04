@@ -10,9 +10,6 @@ import (
 	"github.com/efolchmontiel/wsp-tui/internal/store"
 )
 
-// Message cursor ([ ]): selects ANY message for reactions / open / download.
-// Previously only hopped media rows — that blocked reacting to text.
-
 func (m *Model) selectLastMsgCursor() {
 	if len(m.messages) == 0 {
 		m.msgCursor = -1
@@ -54,14 +51,11 @@ func (m Model) openSelectedMedia() (tea.Model, tea.Cmd) {
 	}
 	msg := m.messages[m.msgCursor]
 	if msg.MediaID != "" {
-		// Same clip already playing / opening → ignore until it finishes.
-		if m.playingMediaID == msg.MediaID {
+		// Do NOT mark images/docs as playing — that drew the audio wave and
+		// refreshed the viewport every 120ms (scroll jump + vanishing lines).
+		if m.playingMediaID == msg.MediaID && isPlayableAV(msg) {
 			m.setInfo("Ya está reproduciendo")
 			return m, nil
-		}
-		m.playingMsgID = msg.ID
-		if msg.Type == store.TypeAudio || msg.Type == store.TypeVideo || looksLikeMediaText(msg.Text) {
-			m.playingMediaID = msg.MediaID // claim slot so spam-o is blocked
 		}
 		m.setInfo("Abriendo…")
 		return m, openMediaCmd(m.eng, msg.MediaID)
@@ -69,11 +63,23 @@ func (m Model) openSelectedMedia() (tea.Model, tea.Cmd) {
 	if isMediaType(msg.Type) || looksLikeMediaText(msg.Text) {
 		m.pendingOpenChat = msg.ChatID
 		m.pendingOpenMsgID = msg.ID
-		m.setInfo("Sin claves — pidiendo al teléfono…")
+		m.setInfo("Sin claves — pidiendo el adjunto al teléfono…")
 		return m, requestResendCmd(m.eng, msg)
 	}
 	m.setInfo("Ese mensaje no tiene adjunto — usa [ ] o la tecla o en un audio/imagen")
 	return m, nil
+}
+
+func isPlayableAV(msg store.Message) bool {
+	switch msg.Type {
+	case store.TypeAudio:
+		return true
+	case store.TypeVideo:
+		t := strings.ToLower(msg.Text)
+		return !strings.HasPrefix(t, "gif")
+	default:
+		return false
+	}
 }
 
 func (m Model) setChatFilter(f store.ChatFilter) (tea.Model, tea.Cmd) {
@@ -90,6 +96,8 @@ func filterLabel(f store.ChatFilter) string {
 		return "Favoritos"
 	case store.FilterGroups:
 		return "Grupos"
+	case store.FilterEstados:
+		return "Estados"
 	case store.FilterNovedades:
 		return "Novedades"
 	case store.FilterArchived:
@@ -164,10 +172,11 @@ func filterBar(active store.ChatFilter, width int, th theme) string {
 		{store.FilterAll, "Todos"},
 		{store.FilterFavorites, "Fav"},
 		{store.FilterGroups, "Grupos"},
+		{store.FilterEstados, "Estados"},
 		{store.FilterNovedades, "Noved"},
 		{store.FilterArchived, "Arch"},
 	}
-	parts := make([]string, 0, 5)
+	parts := make([]string, 0, 6)
 	for _, t := range tabs {
 		if t.f == active {
 			parts = append(parts, th.accent.Bold(true).Render("["+t.s+"]"))
@@ -176,7 +185,7 @@ func filterBar(active store.ChatFilter, width int, th theme) string {
 		}
 	}
 	line := strings.Join(parts, " ")
-	return truncate(line+th.muted.Render(" ·1-5"), max(10, width-2))
+	return truncate(line+th.muted.Render(" ·1-6"), max(10, width-2))
 }
 
 func waveUnder(playing bool, phase float64, width int, th theme) string {

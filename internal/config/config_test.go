@@ -79,3 +79,29 @@ func TestSaveLoadCustomRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGIFProvider(t *testing.T) {
+	if ParseGIFProvider("") != GIFProviderAuto {
+		t.Fatal("default auto")
+	}
+	if CycleGIFProvider(GIFProviderAuto) != GIFProviderGiphy {
+		t.Fatal("auto→giphy")
+	}
+	cfg := Default()
+	if cfg.GIFSearchOnline() {
+		t.Fatal("auto without key should be offline")
+	}
+	cfg.GiphyAPIKey = "abc"
+	if !cfg.GIFSearchOnline() {
+		t.Fatal("auto with key should search")
+	}
+	cfg.GIFProvider = GIFProviderLocal
+	if cfg.GIFSearchOnline() {
+		t.Fatal("local never searches")
+	}
+	cfg.GIFProvider = GIFProviderGiphy
+	cfg.GiphyAPIKey = ""
+	if cfg.GIFSearchOnline() {
+		t.Fatal("giphy without key offline")
+	}
+}

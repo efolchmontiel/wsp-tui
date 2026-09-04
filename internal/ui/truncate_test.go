@@ -8,7 +8,7 @@ import (
 )
 
 func TestTruncateANSIWidth(t *testing.T) {
-	styled := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("[Todos] Fav Grupos Noved Arch ·1-5")
+	styled := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("[Todos] Fav Grupos Estados Noved Arch ·1-6")
 	got := truncate(styled, 14)
 	if w := ansi.StringWidth(got); w > 14 {
 		t.Fatalf("width %d > 14 for %q", w, got)

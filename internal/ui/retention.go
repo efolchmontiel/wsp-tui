@@ -11,9 +11,6 @@ import (
 	"github.com/efolchmontiel/wsp-tui/internal/config"
 )
 
-// Retention modal: pick a preset (with *) or custom number + unit.
-// Opened with R — never dumps status under the chat.
-
 func (m *Model) openRetentionModal() {
 	m.modal = modalRetention
 	n, unit, never := m.cfg.LocalRetention.Parts()
@@ -25,7 +22,6 @@ func (m *Model) openRetentionModal() {
 	}
 	m.retAmount.SetValue("")
 	if !never && n > 0 {
-		// Prefer matching a preset row.
 		cur := config.ParseRetention(string(m.cfg.LocalRetention))
 		for i, p := range config.RetentionPresets {
 			if config.EqualRetention(p, cur) {
@@ -63,7 +59,6 @@ func (m Model) viewRetentionModal() string {
 		b.WriteString("\n")
 	}
 
-	// Custom row
 	custMark := " "
 	_, _, never := cur.Parts()
 	if !never {

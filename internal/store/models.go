@@ -22,7 +22,8 @@ const (
 	FilterAll ChatFilter = iota
 	FilterFavorites
 	FilterGroups
-	FilterNovedades // communities (excluded from Todos/Grupos)
+	FilterEstados   // WhatsApp Status (status@broadcast)
+	FilterNovedades // communities
 	FilterArchived
 )
 

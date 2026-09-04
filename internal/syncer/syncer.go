@@ -23,7 +23,6 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
-// Syncer persists WhatsApp events into the app DB off the UI thread.
 type Syncer struct {
 	store  *store.Store
 	bus    *app.Bus
@@ -53,7 +52,6 @@ type job struct {
 	receipt *events.Receipt
 }
 
-// New creates a syncer. Call Start after wiring the client.
 func New(st *store.Store, bus *app.Bus, logger *slog.Logger) *Syncer {
 	return &Syncer{
 		store:  st,
@@ -63,12 +61,10 @@ func New(st *store.Store, bus *app.Bus, logger *slog.Logger) *Syncer {
 	}
 }
 
-// SetMedia wires the media manager for auto-download of small images.
 func (s *Syncer) SetMedia(m *media.Manager) {
 	s.media = m
 }
 
-// SetClient updates the whatsmeow client used for ParseWebMessage / contacts.
 func (s *Syncer) SetClient(c *whatsmeow.Client) {
 	s.mu.Lock()
 	s.client = c
@@ -81,7 +77,6 @@ func (s *Syncer) clientOrNil() *whatsmeow.Client {
 	return s.client
 }
 
-// Start launches the background worker.
 func (s *Syncer) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
@@ -89,7 +84,6 @@ func (s *Syncer) Start(parent context.Context) {
 	go s.loop(ctx)
 }
 
-// Stop stops the worker.
 func (s *Syncer) Stop() {
 	if s.cancel != nil {
 		s.cancel()
@@ -97,17 +91,14 @@ func (s *Syncer) Stop() {
 	s.wg.Wait()
 }
 
-// EnqueueHistory queues a history sync blob (never blocks the WhatsApp handler long).
 func (s *Syncer) EnqueueHistory(evt *events.HistorySync) {
 	s.tryEnqueue(job{kind: jobHistory, history: evt})
 }
 
-// EnqueueMessage queues a live message event.
 func (s *Syncer) EnqueueMessage(evt *events.Message) {
 	s.tryEnqueue(job{kind: jobMessage, message: evt})
 }
 
-// EnqueueReceipt queues delivery/read receipts.
 func (s *Syncer) EnqueueReceipt(evt *events.Receipt) {
 	s.tryEnqueue(job{kind: jobReceipt, receipt: evt})
 }
@@ -194,7 +185,6 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 		name = "Estados"
 		isGroup = false
 	case isGroup:
-		// Prefer history subject; never trust a leftover push-name. JoinedGroups refresh fixes empties.
 		name = fallback
 		if name == "" {
 			name = "Grupo"
@@ -211,7 +201,6 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 
 	preview := ""
 	msgs := conv.GetMessages()
-	// Two-pass: store normal messages first, then apply reaction events so targets exist.
 	var reactionEvts []*events.Message
 	for i, hm := range msgs {
 		if hm == nil || hm.GetMessage() == nil || client == nil {
@@ -235,7 +224,6 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 			lastTS = sm.Timestamp
 			preview = msgutil.Preview(sm.Text, 80)
 		}
-		// Avoid flooding the bus during huge syncs.
 		if i == len(msgs)-1 {
 			cp := sm
 			s.bus.Publish(app.Event{Kind: app.EventMessageUpserted, Msg: &cp, ChatID: sm.ChatID})
@@ -287,7 +275,6 @@ func (s *Syncer) handleMessage(ctx context.Context, evt *events.Message) {
 		_ = s.store.EnsureChatExists(ctx, sm.ChatID, "Estados", false)
 		_ = s.store.SetChatName(ctx, sm.ChatID, "Estados", false)
 	case isGroup:
-		// Do NOT use sender push names as the group title (that produced "e folchm").
 		_ = s.store.EnsureChatExists(ctx, sm.ChatID, "", true)
 	default:
 		resolved := contacts.ResolveDisplayName(ctx, s.clientOrNil(), evt.Info.Chat, "")
@@ -302,7 +289,20 @@ func (s *Syncer) handleMessage(ctx context.Context, evt *events.Message) {
 
 	cp := sm
 	s.bus.Publish(app.Event{Kind: app.EventMessageUpserted, Msg: &cp, ChatID: sm.ChatID})
-	// Sidebar patch is enough for live traffic; full reload is coalesced on ChatsDirty only.
+
+	if sm.Type == store.TypeCallMissed {
+		resolved, err := s.store.ResolveIncomingCalls(ctx, sm.ChatID, sm.Text)
+		if err != nil {
+			s.logger.Warn("resolve incoming calls", "err", err)
+		}
+		for i := range resolved {
+			if resolved[i].ID == sm.ID {
+				continue
+			}
+			r := resolved[i]
+			s.bus.Publish(app.Event{Kind: app.EventMessageUpserted, Msg: &r, ChatID: r.ChatID})
+		}
+	}
 }
 
 func (s *Syncer) handleReceipt(ctx context.Context, evt *events.Receipt) {
@@ -335,8 +335,6 @@ func (s *Syncer) handleReceipt(ctx context.Context, evt *events.Receipt) {
 	})
 }
 
-// tryHandleReaction applies an emoji reaction onto its target message.
-// Returns true when the event was a reaction (handled or skipped).
 func (s *Syncer) tryHandleReaction(ctx context.Context, evt *events.Message) bool {
 	targetID, emoji, ok := s.resolveReaction(ctx, evt)
 	if !ok {
@@ -344,7 +342,6 @@ func (s *Syncer) tryHandleReaction(ctx context.Context, evt *events.Message) boo
 	}
 	chatID := evt.Info.Chat.String()
 	sender := evt.Info.Sender.String()
-	// Drop the reaction stub if an older build stored it as "Unsupported message".
 	_ = s.store.DeleteMessage(ctx, chatID, string(evt.Info.ID))
 
 	updated, applied, err := s.store.ApplyReaction(ctx, chatID, targetID, sender, emoji)
@@ -394,7 +391,6 @@ func (s *Syncer) resolveReaction(ctx context.Context, evt *events.Message) (targ
 	return key.GetID(), dec.GetText(), true
 }
 
-// applyEmbeddedReactions reads WebMessageInfo.Reactions (history sync) onto the target row.
 func (s *Syncer) applyEmbeddedReactions(ctx context.Context, evt *events.Message, sm store.Message) (store.Message, bool) {
 	if evt == nil || evt.SourceWebMsg == nil {
 		return sm, false
@@ -448,7 +444,6 @@ func embeddedReactionSender(key *waCommon.MessageKey, chat types.JID, own string
 		}
 		return ""
 	}
-	// 1:1 chat: the other party reacted.
 	if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer {
 		return chat.ToNonAD().String()
 	}
@@ -456,6 +451,23 @@ func embeddedReactionSender(key *waCommon.MessageKey, chat types.JID, own string
 		return rj
 	}
 	return ""
+}
+
+func (s *Syncer) canonicalizeMessageChatID(ctx context.Context, evt *events.Message) string {
+	if evt == nil {
+		return ""
+	}
+	candidates := []string{evt.Info.Chat.ToNonAD().String()}
+	if !evt.Info.SenderAlt.IsEmpty() {
+		candidates = append(candidates, evt.Info.SenderAlt.ToNonAD().String())
+	}
+	if !evt.Info.RecipientAlt.IsEmpty() {
+		candidates = append(candidates, evt.Info.RecipientAlt.ToNonAD().String())
+	}
+	if s.store == nil {
+		return candidates[0]
+	}
+	return s.store.PreferExistingChatID(ctx, candidates...)
 }
 
 func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Message, error) {
@@ -469,7 +481,7 @@ func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Me
 	}
 	sm := store.Message{
 		ID:        string(evt.Info.ID),
-		ChatID:    evt.Info.Chat.String(),
+		ChatID:    s.canonicalizeMessageChatID(ctx, evt),
 		Sender:    evt.Info.Sender.String(),
 		Timestamp: evt.Info.Timestamp.Unix(),
 		Text:      text,
@@ -511,7 +523,6 @@ func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Me
 			sm.MetadataJSON = merged
 		}
 	} else if s.media != nil {
-		// Image/video JPEG thumb for inline preview before full download.
 		if thumb := mediaJPEGThumb(evt.Message); len(thumb) > 0 {
 			if path, err := s.media.ThumbPath(sm.ChatID, sm.ID); err == nil {
 				if werr := writeThumbFile(path, thumb); werr == nil {
@@ -531,7 +542,6 @@ func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Me
 		return store.Message{}, err
 	}
 
-	// History sync embeds reactions on WebMessageInfo — apply after the row exists.
 	if updated, ok := s.applyEmbeddedReactions(ctx, evt, sm); ok {
 		sm = updated
 	}
@@ -575,14 +585,12 @@ func (s *Syncer) autoDownload(mediaID string, ref media.DownloadRef) {
 	s.bus.Publish(app.Event{Kind: app.EventMediaUpdated, MediaID: mediaID, Status: store.MediaReady, LocalPath: dest})
 }
 
-// RefreshAllNames corrects 1:1 address-book names, group subjects, and status label.
 func (s *Syncer) RefreshAllNames(ctx context.Context) {
 	s.RefreshChatNames(ctx)
 	s.RefreshGroupNames(ctx)
 	s.fixSpecialChats(ctx)
 }
 
-// RefreshChatNames re-resolves sidebar names from the address book (LID↔PN aware).
 func (s *Syncer) RefreshChatNames(ctx context.Context) {
 	client := s.clientOrNil()
 	if client == nil {
@@ -617,7 +625,6 @@ func (s *Syncer) RefreshChatNames(ctx context.Context) {
 	}
 }
 
-// RefreshGroupNames pulls official group subjects from WhatsApp (GetJoinedGroups).
 func (s *Syncer) RefreshGroupNames(ctx context.Context) {
 	client := s.clientOrNil()
 	if client == nil || !client.IsConnected() {
@@ -653,7 +660,6 @@ func (s *Syncer) RefreshGroupNames(ctx context.Context) {
 	}
 }
 
-// ApplyGroupNameUpdate handles *events.GroupInfo name changes.
 func (s *Syncer) ApplyGroupNameUpdate(ctx context.Context, evt *events.GroupInfo) {
 	if evt == nil || evt.Name == nil {
 		return
@@ -718,7 +724,6 @@ func mediaJPEGThumb(msg *waE2E.Message) []byte {
 		return vid.GetJPEGThumbnail()
 	}
 	if st := msg.GetStickerMessage(); st != nil {
-		// stickers usually have no JPEG thumb
 		return nil
 	}
 	return nil

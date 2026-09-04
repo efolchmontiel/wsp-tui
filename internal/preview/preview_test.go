@@ -72,3 +72,30 @@ func TestGIFFrameCount(t *testing.T) {
 		t.Fatalf("frames %d", n)
 	}
 }
+
+func TestCompositeGIFPartialFrames(t *testing.T) {
+	path := "/home/erickfm/.local/share/whatstui/media/images/1788538599542402705_wsp-tui-giphy-1110098568.gif"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("sample gif not present")
+	}
+	g, err := loadGIF(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := g.Image[4]
+	comp := compositeGIFFrame(g, 4)
+	if comp == nil {
+		t.Fatal("nil composite")
+	}
+	cb := comp.Bounds()
+	if cb.Dx() < raw.Bounds().Dx() || cb.Dy() < g.Config.Height {
+		t.Fatalf("composite too small: %v raw=%v canvas=%dx%d", cb, raw.Bounds(), g.Config.Width, g.Config.Height)
+	}
+	if cb.Dx() != g.Config.Width || cb.Dy() != g.Config.Height {
+		t.Fatalf("want full canvas %dx%d got %v", g.Config.Width, g.Config.Height, cb)
+	}
+	out, err := RenderGIFFrame(path, 40, 16, 4, termimg.Halfblocks)
+	if err != nil || out == "" {
+		t.Fatalf("render: %v empty=%v", err, out == "")
+	}
+}

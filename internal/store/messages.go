@@ -4,10 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
-// ListMessages returns the latest messages for a chat, oldest-first within the page.
-// beforeTS: if > 0, return messages strictly older than that timestamp (pagination).
 func (s *Store) ListMessages(ctx context.Context, chatID string, limit int, beforeTS int64) ([]Message, error) {
 	if limit <= 0 {
 		limit = 50
@@ -61,8 +60,6 @@ LIMIT ?`, chatID, limit)
 	return tmp, nil
 }
 
-// UpsertMessage inserts or updates a message.
-// On conflict, metadata is merged so reactions / link thumbs are not wiped by re-sync.
 func (s *Store) UpsertMessage(ctx context.Context, m Message) error {
 	if m.MetadataJSON == "" {
 		m.MetadataJSON = "{}"
@@ -112,7 +109,6 @@ ON CONFLICT(chat_id, id) DO UPDATE SET
 	return nil
 }
 
-// GetMessage returns one message by chat + id.
 func (s *Store) GetMessage(ctx context.Context, chatID, id string) (Message, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, chat_id, sender, timestamp, text, type, status, quoted_message_id,
@@ -121,7 +117,98 @@ FROM messages WHERE chat_id = ? AND id = ?`, chatID, id)
 	return scanMessage(row)
 }
 
-// UpdateMessageStatus sets status for one message.
+// ResolveIncomingCalls flips sticky call_incoming rows to call_missed for chatID
+// and any SameOneToOne sibling (LID vs phone). Returns the updated messages.
+func (s *Store) ResolveIncomingCalls(ctx context.Context, chatID, text string) ([]Message, error) {
+	if chatID == "" {
+		return nil, nil
+	}
+	if text == "" {
+		text = "Llamada perdida"
+	}
+	ids := s.relatedOneToOneChatIDs(ctx, chatID)
+	var updated []Message
+	for _, id := range ids {
+		rows, err := s.db.QueryContext(ctx, `
+SELECT id, chat_id, sender, timestamp, text, type, status, quoted_message_id,
+       media_id, is_from_me, is_deleted, metadata_json
+FROM messages WHERE chat_id = ? AND type = ?`, id, TypeCallIncoming)
+		if err != nil {
+			return updated, fmt.Errorf("list incoming calls: %w", err)
+		}
+		var batch []Message
+		for rows.Next() {
+			m, err := scanMessage(rows)
+			if err != nil {
+				rows.Close()
+				return updated, err
+			}
+			batch = append(batch, m)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return updated, err
+		}
+		for _, m := range batch {
+			missText := text
+			if strings.Contains(m.Text, "video") && !strings.Contains(text, "video") {
+				missText = "Llamada perdida · video"
+			} else if strings.Contains(m.Text, "voz") && !strings.Contains(text, "voz") && !strings.Contains(text, "video") {
+				missText = "Llamada perdida · voz"
+			}
+			m.Type = TypeCallMissed
+			m.Text = missText
+			if err := s.UpsertMessage(ctx, m); err != nil {
+				return updated, err
+			}
+			updated = append(updated, m)
+		}
+	}
+	return updated, nil
+}
+
+// SweepStaleIncomingCalls marks call_incoming rows older than cutoffUnix as missed.
+func (s *Store) SweepStaleIncomingCalls(ctx context.Context, cutoffUnix int64) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, chat_id, sender, timestamp, text, type, status, quoted_message_id,
+       media_id, is_from_me, is_deleted, metadata_json
+FROM messages WHERE type = ? AND timestamp <= ?`, TypeCallIncoming, cutoffUnix)
+	if err != nil {
+		return nil, fmt.Errorf("sweep incoming calls: %w", err)
+	}
+	defer rows.Close()
+
+	var batch []Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		batch = append(batch, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	updated := make([]Message, 0, len(batch))
+	for _, m := range batch {
+		text := "Llamada perdida"
+		if strings.Contains(m.Text, "video") {
+			text = "Llamada perdida · video"
+		} else if strings.Contains(m.Text, "voz") {
+			text = "Llamada perdida · voz"
+		}
+		m.Type = TypeCallMissed
+		m.Text = text
+		if err := s.UpsertMessage(ctx, m); err != nil {
+			return updated, err
+		}
+		_ = s.TouchChatPreview(ctx, m.ChatID, text, m.Timestamp, 0)
+		updated = append(updated, m)
+	}
+	return updated, nil
+}
+
 func (s *Store) UpdateMessageStatus(ctx context.Context, chatID, id, status string) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE messages SET status = ? WHERE chat_id = ? AND id = ?`, status, chatID, id)
@@ -131,7 +218,6 @@ UPDATE messages SET status = ? WHERE chat_id = ? AND id = ?`, status, chatID, id
 	return nil
 }
 
-// UpdateMessagesStatus sets status for many IDs in one chat.
 func (s *Store) UpdateMessagesStatus(ctx context.Context, chatID string, ids []string, status string) error {
 	if len(ids) == 0 {
 		return nil

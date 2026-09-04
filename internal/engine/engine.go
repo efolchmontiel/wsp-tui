@@ -55,6 +55,10 @@ type Engine struct {
 	playCmd   *exec.Cmd
 	playID    string
 	playGen   uint64
+
+	// Incoming call ring state keyed by WhatsApp call-id.
+	callMu      sync.Mutex
+	activeCalls map[string]*activeCall
 }
 
 // New constructs an Engine. Call Start to connect.
@@ -185,6 +189,7 @@ func (e *Engine) handleEvent(evt any) {
 	switch v := evt.(type) {
 	case *events.Connected:
 		e.publishState(app.StateConnected, "connected")
+		go e.sweepStaleIncomingCalls()
 		if e.syncer != nil {
 			go e.syncer.RefreshAllNames(context.Background())
 		}
@@ -222,6 +227,8 @@ func (e *Engine) handleEvent(evt any) {
 		e.handleCallOffer(v)
 	case *events.CallOfferNotice:
 		e.handleCallOfferNotice(v)
+	case *events.CallAccept:
+		e.handleCallAccept(v)
 	case *events.CallTerminate:
 		e.handleCallTerminate(v)
 	case *events.CallReject:

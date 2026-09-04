@@ -10,8 +10,12 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/efolchmontiel/wsp-tui/internal/app"
+	"github.com/efolchmontiel/wsp-tui/internal/config"
 	"github.com/efolchmontiel/wsp-tui/internal/engine"
 	"github.com/efolchmontiel/wsp-tui/internal/giphy"
+	"github.com/efolchmontiel/wsp-tui/internal/media"
+	"github.com/efolchmontiel/wsp-tui/internal/preview"
+	"github.com/efolchmontiel/wsp-tui/internal/store"
 )
 
 type emojiPickerMode int
@@ -26,7 +30,6 @@ type emojiCategory struct {
 	Items []string
 }
 
-// Built-in emoji set for the TUI picker (offline).
 var emojiCategories = []emojiCategory{
 	{Name: "Caras", Items: []string{
 		"😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇",
@@ -72,6 +75,14 @@ type (
 		path string
 		err  error
 	}
+	giphyPreviewMsg struct {
+		id   string
+		path string
+		err  error
+	}
+	giphyOpenMsg struct {
+		err error
+	}
 )
 
 func (m *Model) openEmojiPicker(mode emojiPickerMode) {
@@ -84,6 +95,7 @@ func (m *Model) openEmojiPicker(mode emojiPickerMode) {
 	m.gifCursor = 0
 	m.gifBusy = false
 	m.gifErr = ""
+	m.clearGifPreview()
 	m.gifQuery.SetValue("")
 	m.gifQuery.Blur()
 	m.input.Blur()
@@ -94,6 +106,7 @@ func (m *Model) closeEmojiPicker() {
 	m.emojiGIF = false
 	m.gifQuery.Blur()
 	m.gifBusy = false
+	m.clearGifPreview()
 	if m.emojiMode == emojiModeInsert {
 		m.focus = focusInput
 		m.applyFocus()
@@ -101,6 +114,14 @@ func (m *Model) closeEmojiPicker() {
 		m.focus = focusMessages
 		m.applyFocus()
 	}
+}
+
+func (m *Model) clearGifPreview() {
+	if m.gifPreviewPath != "" {
+		_ = os.Remove(m.gifPreviewPath)
+	}
+	m.gifPreviewPath = ""
+	m.gifPreviewID = ""
 }
 
 func (m Model) emojiItems() []string {
@@ -166,6 +187,17 @@ func (m Model) hasGiphyKey() bool {
 	return strings.TrimSpace(m.cfg.GiphyAPIKey) != ""
 }
 
+func (m Model) gifSearchOnline() bool {
+	return m.cfg.GIFSearchOnline()
+}
+
+func (m Model) gifPickerPreviewSize() (w, h int) {
+	boxW := max(48, min(m.width-4, 80))
+	w = min(64, max(40, boxW-4))
+	h = max(16, min(22, max(16, m.height/3)))
+	return w, h
+}
+
 func (m Model) viewEmojiPicker() string {
 	title := "Insertar emoji"
 	if m.emojiMode == emojiModeReact {
@@ -219,8 +251,9 @@ func (m Model) viewEmojiPicker() string {
 
 func (m Model) viewGIFTab() string {
 	var b strings.Builder
-	if m.hasGiphyKey() {
-		b.WriteString(m.theme.muted.Render("Buscar en Giphy (opcional: también puedes pegar un archivo local)"))
+	prov := config.ParseGIFProvider(string(m.cfg.GIFProvider))
+	if m.gifSearchOnline() {
+		b.WriteString(m.theme.muted.Render("Buscar en Giphy · f = archivo .gif local · Ctrl+G proveedor/key"))
 		b.WriteString("\n")
 		b.WriteString(m.gifQuery.View())
 		b.WriteString("\n\n")
@@ -229,9 +262,24 @@ func (m Model) viewGIFTab() string {
 		} else if m.gifErr != "" {
 			b.WriteString(m.theme.statusErr.Render(m.gifErr))
 		} else if len(m.gifResults) == 0 {
-			b.WriteString(m.theme.muted.Render("Escribe y Enter para buscar · f = archivo .gif del disco"))
+			b.WriteString(m.theme.muted.Render("Escribe y Enter para buscar"))
 		} else {
-			for i, r := range m.gifResults {
+			const listWindow = 5
+			start := m.gifCursor - listWindow/2
+			if start < 0 {
+				start = 0
+			}
+			end := start + listWindow
+			if end > len(m.gifResults) {
+				end = len(m.gifResults)
+				start = max(0, end-listWindow)
+			}
+			if start > 0 {
+				b.WriteString(m.theme.muted.Render("  …"))
+				b.WriteString("\n")
+			}
+			for i := start; i < end; i++ {
+				r := m.gifResults[i]
 				line := truncate(r.Title, 48)
 				if i == m.gifCursor {
 					line = m.theme.sidebarSel.Render("▸ " + line)
@@ -241,15 +289,57 @@ func (m Model) viewGIFTab() string {
 				b.WriteString(line)
 				b.WriteString("\n")
 			}
+			if end < len(m.gifResults) {
+				b.WriteString(m.theme.muted.Render("  …"))
+				b.WriteString("\n")
+			}
 			b.WriteString("\n")
-			b.WriteString(m.theme.muted.Render("↑↓ elegir · Enter enviar · f archivo local"))
+			pw, ph := m.gifPickerPreviewSize()
+			// Same as chat: Kitty/iTerm blank out inside Bubble Tea; mosaic always shows.
+			proto := preview.Halfblocks()
+			if m.gifPreviewPath != "" {
+				var (
+					img string
+					err error
+				)
+				if preview.GIFFrameCount(m.gifPreviewPath) > 1 {
+					img, err = preview.RenderGIFFrame(m.gifPreviewPath, pw, ph, m.gifFrame, proto)
+				} else {
+					img, err = preview.RenderFile(m.gifPreviewPath, pw, ph, proto)
+				}
+				if err == nil && img != "" {
+					b.WriteString(img)
+					if !strings.HasSuffix(img, "\n") {
+						b.WriteString("\n")
+					}
+				} else {
+					b.WriteString(m.theme.muted.Render("(vista previa no disponible)"))
+					b.WriteString("\n")
+				}
+			} else {
+				b.WriteString(m.theme.muted.Render("Cargando vista previa…"))
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+			b.WriteString(m.theme.muted.Render("↑↓ elegir · o abrir · Enter enviar · f archivo local"))
 		}
-	} else {
-		b.WriteString(m.theme.muted.Render("Sin giphy_api_key en config.toml — modo archivo local."))
+		return b.String()
+	}
+
+	switch prov {
+	case config.GIFProviderGiphy:
+		b.WriteString(m.theme.statusErr.Render("Proveedor giphy sin API key."))
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.muted.Render("Ctrl+G para pegar la key, o Tab → auto/local."))
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.accent.Render("f"))
+		b.WriteString(" / Enter = archivo .gif local")
+	default:
+		b.WriteString(m.theme.muted.Render("Modo local (sin búsqueda online)."))
 		b.WriteString("\n\n")
 		b.WriteString(m.theme.accent.Render("Enter"))
 		b.WriteString(" abrir selector (solo .gif)\n")
-		b.WriteString(m.theme.muted.Render("Tip: agrega giphy_api_key = \"…\" para buscar online."))
+		b.WriteString(m.theme.muted.Render("Ctrl+G: cambiar a auto/giphy y agregar key."))
 	}
 	return b.String()
 }
@@ -301,22 +391,22 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "up", "k":
-		if m.emojiGIF && m.hasGiphyKey() && len(m.gifResults) > 0 {
+		if m.emojiGIF && m.gifSearchOnline() && len(m.gifResults) > 0 {
 			if m.gifCursor > 0 {
 				m.gifCursor--
 			}
-			return m, nil
+			return m, m.ensureGifPreviewCmd()
 		}
 		if !m.emojiGIF {
 			m.emojiIdx = emojiGridMove(m.emojiIdx, len(m.emojiItems()), emojiCols, -1, 0)
 		}
 		return m, nil
 	case "down", "j":
-		if m.emojiGIF && m.hasGiphyKey() && len(m.gifResults) > 0 {
+		if m.emojiGIF && m.gifSearchOnline() && len(m.gifResults) > 0 {
 			if m.gifCursor < len(m.gifResults)-1 {
 				m.gifCursor++
 			}
-			return m, nil
+			return m, m.ensureGifPreviewCmd()
 		}
 		if !m.emojiGIF {
 			m.emojiIdx = emojiGridMove(m.emojiIdx, len(m.emojiItems()), emojiCols, 1, 0)
@@ -326,6 +416,10 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.emojiGIF {
 			m.closeEmojiPicker()
 			return m.openGIFPicker()
+		}
+	case "o":
+		if m.emojiGIF && m.gifSearchOnline() && len(m.gifResults) > 0 {
+			return m.openSelectedGifExternal()
 		}
 	case "backspace", "delete":
 		if m.emojiMode == emojiModeReact && !m.emojiGIF {
@@ -342,8 +436,7 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.emojiIdx = clampEmojiIdx(m.emojiIdx, len(items))
 		return m.applyEmojiSelection(items[m.emojiIdx])
 	case " ":
-		// Space must type into the Giphy search box — never trigger send/search.
-		if m.emojiGIF && m.hasGiphyKey() {
+		if m.emojiGIF && m.gifSearchOnline() {
 			var cmd tea.Cmd
 			m.gifQuery, cmd = m.gifQuery.Update(msg)
 			return m, cmd
@@ -358,7 +451,7 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.emojiIdx = clampEmojiIdx(m.emojiIdx, len(items))
 		return m.applyEmojiSelection(items[m.emojiIdx])
 	}
-	if m.emojiGIF && m.hasGiphyKey() {
+	if m.emojiGIF && m.gifSearchOnline() {
 		var cmd tea.Cmd
 		m.gifQuery, cmd = m.gifQuery.Update(msg)
 		return m, cmd
@@ -368,13 +461,13 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) enterGIFTab() {
 	m.gifErr = ""
-	if m.hasGiphyKey() {
+	if m.gifSearchOnline() {
 		m.gifQuery.Focus()
 	}
 }
 
 func (m Model) confirmGIFTab() (tea.Model, tea.Cmd) {
-	if !m.hasGiphyKey() {
+	if !m.gifSearchOnline() {
 		m.closeEmojiPicker()
 		return m.openGIFPicker()
 	}
@@ -418,11 +511,102 @@ func downloadGiphyCmd(gifURL string) tea.Cmd {
 	}
 }
 
+// openSelectedGifExternal opens the full-resolution GIF with the OS viewer (same as chat `o`).
+func (m Model) openSelectedGifExternal() (tea.Model, tea.Cmd) {
+	if m.gifCursor < 0 || m.gifCursor >= len(m.gifResults) {
+		m.setInfo("Elegí un GIF con ↑↓")
+		return m, nil
+	}
+	sel := m.gifResults[m.gifCursor]
+	url := strings.TrimSpace(sel.URL)
+	if url == "" {
+		url = strings.TrimSpace(sel.PreviewURL)
+	}
+	local := m.gifPreviewPath
+	if sel.ID != "" && sel.ID == m.gifPreviewID {
+		// keep local as fast fallback while full URL downloads
+	} else {
+		local = ""
+	}
+	if url == "" && local == "" {
+		m.setInfo("Sin archivo para abrir")
+		return m, nil
+	}
+	m.setInfo("Abriendo…")
+	return m, openGifExternalCmd(url, local)
+}
+
+func openGifExternalCmd(fullURL, localPath string) tea.Cmd {
+	return func() tea.Msg {
+		path := localPath
+		var cleanup string
+		if fullURL != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			p, err := giphy.DownloadToTemp(ctx, fullURL)
+			if err == nil && p != "" {
+				path = p
+				cleanup = p
+			} else if path == "" {
+				return giphyOpenMsg{err: err}
+			}
+		}
+		if path == "" {
+			return giphyOpenMsg{err: fmt.Errorf("sin archivo local")}
+		}
+		_, err := media.OpenExternal(path, "image")
+		if cleanup != "" {
+			go func(p string) {
+				time.Sleep(90 * time.Second)
+				_ = os.Remove(p)
+			}(cleanup)
+		}
+		return giphyOpenMsg{err: err}
+	}
+}
+
+func (m Model) applyGiphyOpen(msg giphyOpenMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.setInfo("No se pudo abrir: " + msg.err.Error())
+		return m, nil
+	}
+	m.setInfo("Abierto")
+	return m, nil
+}
+
+func (m Model) ensureGifPreviewCmd() tea.Cmd {
+	if !m.pickingEmoji || !m.emojiGIF || len(m.gifResults) == 0 {
+		return nil
+	}
+	if m.gifCursor < 0 || m.gifCursor >= len(m.gifResults) {
+		return nil
+	}
+	sel := m.gifResults[m.gifCursor]
+	if sel.ID != "" && sel.ID == m.gifPreviewID && m.gifPreviewPath != "" {
+		return nil
+	}
+	url := strings.TrimSpace(sel.PreviewURL)
+	if url == "" {
+		url = sel.URL
+	}
+	if url == "" {
+		return nil
+	}
+	id := sel.ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		path, err := giphy.DownloadToTemp(ctx, url)
+		return giphyPreviewMsg{id: id, path: path, err: err}
+	}
+}
+
 func (m Model) applyGiphySearch(msg giphySearchMsg) (tea.Model, tea.Cmd) {
 	if !m.pickingEmoji || !m.emojiGIF {
 		return m, nil
 	}
 	m.gifBusy = false
+	m.clearGifPreview()
 	if msg.err != nil {
 		m.gifErr = msg.err.Error()
 		m.gifResults = nil
@@ -432,7 +616,43 @@ func (m Model) applyGiphySearch(msg giphySearchMsg) (tea.Model, tea.Cmd) {
 	m.gifCursor = 0
 	if len(msg.results) == 0 {
 		m.gifErr = "Sin resultados"
+		return m, nil
 	}
+	return m, m.ensureGifPreviewCmd()
+}
+
+func (m Model) applyGiphyPreview(msg giphyPreviewMsg) (tea.Model, tea.Cmd) {
+	if !m.pickingEmoji || !m.emojiGIF {
+		if msg.path != "" {
+			_ = os.Remove(msg.path)
+		}
+		return m, nil
+	}
+	if len(m.gifResults) == 0 || m.gifCursor < 0 || m.gifCursor >= len(m.gifResults) {
+		if msg.path != "" {
+			_ = os.Remove(msg.path)
+		}
+		return m, nil
+	}
+	if msg.id != "" && msg.id != m.gifResults[m.gifCursor].ID {
+		if msg.path != "" {
+			_ = os.Remove(msg.path)
+		}
+		return m, nil
+	}
+	if msg.err != nil || msg.path == "" {
+		if msg.path != "" {
+			_ = os.Remove(msg.path)
+		}
+		if msg.err != nil {
+			m.gifErr = "Vista previa: " + msg.err.Error()
+		}
+		return m, nil
+	}
+	m.gifErr = ""
+	m.clearGifPreview()
+	m.gifPreviewID = msg.id
+	m.gifPreviewPath = msg.path
 	return m, nil
 }
 
@@ -459,9 +679,14 @@ func (m Model) applyGiphySend(msg giphySendMsg) (tea.Model, tea.Cmd) {
 	chat := m.selectedID
 	tmp := path
 	return m, func() tea.Msg {
-		defer os.Remove(tmp) // temp only; SendFile copies into media/ first
-		_, err := eng.SendFile(context.Background(), chat, tmp, "")
-		return sendResultMsg{err: err}
+		defer os.Remove(tmp)
+		msg, err := eng.SendFile(context.Background(), chat, tmp, "")
+		var mp *store.Message
+		if err == nil {
+			cp := msg
+			mp = &cp
+		}
+		return sendResultMsg{err: err, chatID: chat, msg: mp}
 	}
 }
 

@@ -26,9 +26,7 @@ import (
 
 const (
 	messagePageSize = 50
-	// Each sidebar chat occupies name + preview.
 	sidebarChatRows = 2
-	// filter bar + "Chats" title inside the bordered sidebar.
 	sidebarHeaderRows = 2
 )
 
@@ -51,7 +49,6 @@ const (
 	modalGiphyKey
 )
 
-// Model is the root TUI.
 type Model struct {
 	theme   theme
 	cfg     config.Config
@@ -85,23 +82,19 @@ type Model struct {
 	loadingMsgs bool
 	quitting    bool
 
-	// Phase 3: coalesce expensive sidebar reloads while input stays hot.
 	chatsDirtyGen int
 
-	// Phase 4: multimedia
 	pickingFile bool
 	filePicker  filepicker.Model
 	uploadNote  string
 	mediaHint   string // last media state tip
 
-	// Emoji / GIF picker + reactions
 	pickingEmoji bool
 	emojiMode    emojiPickerMode
 	emojiCat     int
 	emojiIdx     int
 	emojiGIF     bool
 
-	// Phase 5: UX
 	searching    bool
 	searchInput  textinput.Model
 	searchHits   []store.SearchHit
@@ -110,18 +103,15 @@ type Model struct {
 	modal        modalKind
 	infoUntil    time.Time
 
-	// Contacts: add + delete
 	addingContact bool
 	addName       textinput.Model
 	addPhone      textinput.Model
 	addField      int // 0=name, 1=phone
 	pendingDelete string
 
-	// After requesting a resend, auto-open when MediaID arrives.
 	pendingOpenMsgID string
 	pendingOpenChat  string
 
-	// Sidebar filters + media navigation + playback visualizer
 	chatFilter      store.ChatFilter
 	msgCursor       int // selected message index for [ ] / r / o / d (-1 none)
 	playingMediaID  string
@@ -130,20 +120,19 @@ type Model struct {
 	desktopNotify   bool
 	gifFrame        int // advances for animated GIF previews
 
-	// Retention settings modal (key R)
 	retCursor int
 	retCustom bool
 	retUnit   config.RetentionUnit
 	retAmount textinput.Model
 
-	// Giphy search (optional; needs giphy_api_key)
-	gifQuery   textinput.Model
-	gifResults []giphy.Result
-	gifCursor  int
-	gifBusy    bool
-	gifErr     string
+	gifQuery       textinput.Model
+	gifResults     []giphy.Result
+	gifCursor      int
+	gifBusy        bool
+	gifErr         string
+	gifPreviewID   string
+	gifPreviewPath string
 
-	// Giphy API key modal (Ctrl+G)
 	giphyKeyInput  textinput.Model
 	giphyKeyStatus string
 	giphyKeyBusy   bool
@@ -170,7 +159,11 @@ type (
 		code string
 		err  error
 	}
-	sendResultMsg   struct{ err error }
+	sendResultMsg struct {
+		err    error
+		chatID string
+		msg    *store.Message
+	}
 	chatsReloadMsg  struct{ gen int }
 	searchReloadMsg struct {
 		gen   int
@@ -197,7 +190,6 @@ type (
 	}
 )
 
-// New creates the root model.
 func New(bus *app.Bus, eng *engine.Engine, st *store.Store, hasSession bool, cfg config.Config, cfgPath string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Escribe… (Enter enviar · Ctrl+E emoji/GIF · / buscar · ? ayuda)"
@@ -316,15 +308,25 @@ func loadOlderMessagesCmd(st *store.Store, chatID string, beforeTS int64) tea.Cm
 
 func sendTextCmd(eng *engine.Engine, chatID, text string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := eng.SendText(context.Background(), chatID, text)
-		return sendResultMsg{err: err}
+		msg, err := eng.SendText(context.Background(), chatID, text)
+		var mp *store.Message
+		if err == nil {
+			cp := msg
+			mp = &cp
+		}
+		return sendResultMsg{err: err, chatID: chatID, msg: mp}
 	}
 }
 
 func sendFileCmd(eng *engine.Engine, chatID, path, caption string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := eng.SendFile(context.Background(), chatID, path, caption)
-		return sendResultMsg{err: err}
+		msg, err := eng.SendFile(context.Background(), chatID, path, caption)
+		var mp *store.Message
+		if err == nil {
+			cp := msg
+			mp = &cp
+		}
+		return sendResultMsg{err: err, chatID: chatID, msg: mp}
 	}
 }
 
@@ -366,7 +368,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.wavePhase += 0.22
 			needRefresh = true
 		}
-		if m.cfg.ShowMediaPreviews && m.hasAnimatedPreview() {
+		if m.hasAnimatedPreview() {
 			interval = 120 * time.Millisecond
 			m.gifFrame++
 			needRefresh = true
@@ -445,6 +447,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case giphySendMsg:
 		return m.applyGiphySend(msg)
 
+	case giphyPreviewMsg:
+		return m.applyGiphyPreview(msg)
+
+	case giphyOpenMsg:
+		return m.applyGiphyOpen(msg)
+
 	case giphyKeyCheckMsg:
 		return m.applyGiphyKeyCheck(msg)
 
@@ -475,6 +483,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
 			m.modal = modalError
+			return m, nil
+		}
+		if msg.msg != nil {
+			m.patchChatPreview(*msg.msg)
+			if m.chatMatches(msg.chatID) || m.chatMatches(msg.msg.ChatID) {
+				m.upsertLocalMessage(*msg.msg)
+				m.selectLastMsgCursor()
+				m.refreshViewport(true)
+			}
 		}
 		return m, nil
 
@@ -594,6 +611,15 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 		m.modal = modalError
 	case app.EventInfo:
 		m.setInfo(evt.Message)
+		// Image/doc open publishes "Abierto:" — never AV playback. Clear any
+		// stale wave claim left by older clients or a bad open path.
+		if strings.HasPrefix(evt.Message, "Abierto:") {
+			if m.playingMediaID != "" || m.playingMsgID != "" {
+				m.playingMediaID = ""
+				m.playingMsgID = ""
+				m.refreshViewport(false)
+			}
+		}
 	case app.EventSyncProgress:
 		m.syncNote = evt.Message
 	case app.EventChatsDirty, app.EventChatUpserted:
@@ -603,7 +629,7 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 			if !evt.IsReaction {
 				m.patchChatPreview(*evt.Msg)
 			}
-			if evt.Msg.ChatID == m.selectedID {
+			if m.chatMatches(evt.Msg.ChatID) {
 				m.upsertLocalMessage(*evt.Msg)
 				if m.msgCursor < 0 {
 					m.selectLastMsgCursor()
@@ -627,7 +653,6 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 				id := evt.Msg.MediaID
 				m.pendingOpenChat = ""
 				m.pendingOpenMsgID = ""
-				m.playingMsgID = evt.Msg.ID
 				m.setInfo("Adjunto recuperado — abriendo…")
 				return tea.Batch(m.scheduleChatsReload(), openMediaCmd(m.eng, id))
 			}
@@ -659,7 +684,6 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 		m.refreshViewport(false)
 		return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case app.EventMediaStopped:
-		// Ignore stale stop from a clip we already replaced.
 		if evt.MediaID == "" || evt.MediaID == m.playingMediaID {
 			m.playingMediaID = ""
 			m.playingMsgID = ""
@@ -771,7 +795,6 @@ func (m Model) updateLoginKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Voice note takes Esc / v even while "recording overlay" semantics.
 	if m.eng != nil && m.eng.IsRecording() {
 		switch msg.String() {
 		case "esc":
@@ -841,9 +864,13 @@ func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "4":
 		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterNovedades)
+			return m.setChatFilter(store.FilterEstados)
 		}
 	case "5":
+		if m.focus != focusInput {
+			return m.setChatFilter(store.FilterNovedades)
+		}
+	case "6":
 		if m.focus != focusInput {
 			return m.setChatFilter(store.FilterArchived)
 		}
@@ -950,8 +977,13 @@ func (m Model) finishVoiceNote() (tea.Model, tea.Cmd) {
 	m.uploadNote = "Enviando nota de voz…"
 	eng := m.eng
 	return m, func() tea.Msg {
-		_, err := eng.StopVoiceRecordAndSend(context.Background(), chatID)
-		return sendResultMsg{err: err}
+		msg, err := eng.StopVoiceRecordAndSend(context.Background(), chatID)
+		var mp *store.Message
+		if err == nil {
+			cp := msg
+			mp = &cp
+		}
+		return sendResultMsg{err: err, chatID: chatID, msg: mp}
 	}
 }
 
@@ -992,7 +1024,6 @@ func (m Model) updateModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.modal = modalNone
 		if m.errMsg != "" && msg.String() != "?" {
-			// keep err in footer briefly after dismissing modal
 		}
 		return m, nil
 	}
@@ -1239,34 +1270,33 @@ func (m Model) cyclePronoun() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateMessageKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.msgVP, cmd = m.msgVP.Update(msg)
+	// Handle app keys before viewport so "o"/"d" don't move scroll.
 	switch msg.String() {
 	case "enter", "i":
 		m.focus = focusInput
 		m.applyFocus()
 		return m, textinput.Blink
 	case "o":
-		mod, c := m.openOrRecoverMedia()
-		return mod, tea.Batch(cmd, c)
+		return m.openOrRecoverMedia()
 	case "r":
 		if m.selectedID == "" || len(m.messages) == 0 {
 			m.setInfo("Abre un chat y elige un mensaje ([ ])")
-			return m, cmd
+			return m, nil
 		}
 		m.openEmojiPicker(emojiModeReact)
 		return m, nil
 	case "d":
-		mod, c := m.downloadOrRecoverMedia()
-		return mod, tea.Batch(cmd, c)
+		return m.downloadOrRecoverMedia()
 	case "g":
 		return m.cyclePronoun()
 	case "pgup":
 		if m.msgVP.AtTop() && m.selectedID != "" && len(m.messages) > 0 && !m.loadingMsgs {
 			m.loadingMsgs = true
-			return m, tea.Batch(cmd, loadOlderMessagesCmd(m.store, m.selectedID, m.messages[0].Timestamp))
+			return m, loadOlderMessagesCmd(m.store, m.selectedID, m.messages[0].Timestamp)
 		}
 	}
+	var cmd tea.Cmd
+	m.msgVP, cmd = m.msgVP.Update(msg)
 	return m, cmd
 }
 
@@ -1292,7 +1322,6 @@ func (m Model) updateInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+o":
 		return m.openFilePicker()
 	case "o":
-		// only treat as open-media when input is empty so typing "o" still works
 		if strings.TrimSpace(m.input.Value()) == "" {
 			return m.openOrRecoverMedia()
 		}
@@ -1307,6 +1336,9 @@ func (m Model) selectChatAtCursor() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	id := m.chats[m.chatCursor].ID
+	if id != m.selectedID {
+		preview.ClearGraphics()
+	}
 	m.selectedID = id
 	m.messages = nil
 	m.loadingMsgs = true
@@ -1326,6 +1358,16 @@ func (m *Model) upsertLocalMessage(msg store.Message) {
 		}
 	}
 	m.messages = append(m.messages, msg)
+}
+
+func (m Model) chatMatches(chatID string) bool {
+	if chatID == "" || m.selectedID == "" {
+		return false
+	}
+	if chatID == m.selectedID {
+		return true
+	}
+	return store.SameOneToOne(chatID, m.selectedID)
 }
 
 func (m *Model) syncCursorToSelected() {
@@ -1352,7 +1394,6 @@ func (m *Model) applyFocus() {
 func (m *Model) relayout() {
 	sidebarW, contentW, bodyH := m.layoutSizes()
 	_ = sidebarW
-	// contentW includes border; padding(0,1) + border eat 4 cols; head/sep/input eat rows.
 	m.msgVP.Width = max(20, contentW-4)
 	m.msgVP.Height = max(3, bodyH-5)
 	m.input.Width = max(10, contentW-8)
@@ -1373,7 +1414,6 @@ func (m *Model) layoutSizes() (sidebarW, contentW, bodyH int) {
 
 func (m *Model) sidebarVisibleChats() int {
 	_, _, bodyH := m.layoutSizes()
-	// Inside bordered box: header rows + chat rows must fit in bodyH.
 	avail := max(1, bodyH-2 /*borders*/ -sidebarHeaderRows)
 	return max(1, avail/sidebarChatRows)
 }
@@ -1397,7 +1437,6 @@ func (m *Model) refreshViewport(stickBottom bool) {
 	if stickBottom || atBottom {
 		m.msgVP.GotoBottom()
 	}
-	// Clamp if content shrank (deleted stubs / chat switch).
 	if m.msgVP.PastBottom() {
 		m.msgVP.GotoBottom()
 	}
@@ -1445,7 +1484,7 @@ func (m Model) viewHelpModal() string {
 
   Tab / Shift+Tab     Cambiar panel
   Ctrl+H / Ctrl+L     Chats / Input
-  1 2 3 4 5           Todos / Favoritos / Grupos / Novedades / Archivados
+  1 2 3 4 5 6         Todos / Favoritos / Grupos / Estados / Novedades / Archivados
   e                   Archivar / desarchivar chat
   f / *               Favorito (pin)
   m                   Mensajes temporales (Off→24h→7d→90d) · 1:1 y grupos
@@ -1454,8 +1493,8 @@ func (m Model) viewHelpModal() string {
   x                   Eliminar chat local (sidebar)
   [ / ]               Seleccionar mensaje (texto o media) · r reacciona · o/d si hay adjunto
   R                   Retención local (modal: presets + personalizado)
-  Ctrl+G              Giphy API key (validar y guardar en config)
-  Ctrl+E              Panel emoji / GIF (Giphy si hay API key; si no, archivo .gif)
+  Ctrl+G              GIF: proveedor (auto/giphy/local) + API key Giphy
+  Ctrl+E              Panel emoji / GIF (Giphy si auto/giphy con key; si no, archivo .gif)
   r                   Reaccionar al mensaje seleccionado ([ ])
   Ctrl+O              Adjuntar archivo
   o / d               Abrir / descargar media del mensaje seleccionado
@@ -1466,14 +1505,16 @@ func (m Model) viewHelpModal() string {
   Esc                 Cerrar modal / búsqueda / picker / cancelar voz
   q                   Salir
 
-Novedades (4): comunidades a las que te uniste (no aparecen en Todos/Grupos).
+Estados (4): solo estados de WhatsApp (status@broadcast).
+Novedades (5): comunidades; no aparecen en Todos/Grupos.
+Archivados (6): chats archivados.
 Llamadas: fondo amarillo = entrante · rojo claro = perdida/rechazada
 (no se pueden contestar desde la TUI).
 Ticks: ✓ enviado · ✓✓ entregado · ✓✓ azul = leído (si el otro tiene
 confirmación de lectura activada en WhatsApp).
 Notificaciones de escritorio + sonido al llegar un mensaje en otro chat.
 Emoji: Ctrl+E inserta; Tab → GIF busca (Giphy) o archivo .gif.
-Giphy key: Ctrl+G para pegar/validar/guardar (o dejar vacía).
+GIF: Ctrl+G elige proveedor auto/giphy/local y pega/valida la key.
 Reacciones: [ ] elige el mensaje (también texto) y pulsa r.
 
 Mouse: click en chat, scroll en lista/mensajes, click en input.`
@@ -1692,7 +1733,6 @@ func (m Model) renderMessages() string {
 		return m.theme.muted.Render("No messages loaded yet.")
 	}
 	peer := m.peerLabel()
-	pw := min(preview.DefaultWidth, max(20, m.msgVP.Width-4))
 	var b strings.Builder
 	for i, msg := range m.messages {
 		ts := time.Unix(msg.Timestamp, 0).Local().Format("15:04")
@@ -1743,8 +1783,10 @@ func (m Model) renderMessages() string {
 			}
 		}
 
-		if m.cfg.ShowMediaPreviews {
-			if img := m.renderMsgPreview(msg, pw, preview.DefaultHeight); img != "" {
+		if m.cfg.ShowMediaPreviews && i == m.msgCursor {
+			w := max(40, min(m.msgVP.Width-4, 72))
+			ph := max(18, min(28, m.msgVP.Height-4))
+			if img := m.renderMsgPreview(msg, w, ph); img != "" {
 				b.WriteString(img)
 				if !strings.HasSuffix(img, "\n") {
 					b.WriteString("\n")
@@ -1767,7 +1809,9 @@ func (m Model) renderMsgPreview(msg store.Message, width, height int) string {
 	if path == "" {
 		return ""
 	}
-	proto := preview.ProtocolFromConfig(m.cfg.PreviewProtocol)
+	// Chat lives in Bubble Tea alt-screen: Kitty/iTerm/Sixel often paint blank
+	// or get wiped by ClearGraphics. Mosaic halfblocks always show in-terminal.
+	proto := preview.Halfblocks()
 	var (
 		out string
 		err error
@@ -1784,7 +1828,6 @@ func (m Model) renderMsgPreview(msg store.Message, width, height int) string {
 }
 
 func (m Model) previewPathFor(msg store.Message) string {
-	// Prefer full local media for GIF/image when ready.
 	if msg.MediaID != "" {
 		row, err := m.store.GetMedia(context.Background(), msg.MediaID)
 		if err == nil && row.LocalPath != "" && row.DownloadState == store.MediaReady {
@@ -1800,14 +1843,15 @@ func (m Model) previewPathFor(msg store.Message) string {
 }
 
 func (m Model) hasAnimatedPreview() bool {
+	if m.pickingEmoji && m.emojiGIF && m.gifPreviewPath != "" && preview.GIFFrameCount(m.gifPreviewPath) > 1 {
+		return true
+	}
 	if !m.cfg.ShowMediaPreviews || m.selectedID == "" {
 		return false
 	}
-	for _, msg := range m.messages {
-		path := m.previewPathFor(msg)
-		if path != "" && preview.GIFFrameCount(path) > 1 {
-			return true
-		}
+	if m.msgCursor >= 0 && m.msgCursor < len(m.messages) {
+		path := m.previewPathFor(m.messages[m.msgCursor])
+		return path != "" && preview.GIFFrameCount(path) > 1
 	}
 	return false
 }
@@ -1820,9 +1864,6 @@ func mediaLine(msg store.Message) string {
 	return base + "  [o abrir · d descargar]"
 }
 
-// peerLabel is the other party label in the transcript.
-// Priority: explicit Él/Ella pronoun → address-book/chat name → "Contacto".
-// WhatsApp does not send gender; set pronoun via chat settings (g key in UI).
 func (m Model) peerLabel() string {
 	if m.selectedID != "" {
 		switch m.store.GetChatPronoun(context.Background(), m.selectedID) {
@@ -1881,7 +1922,6 @@ func statusGlyph(m store.Message, th theme) string {
 	case store.StatusDelivered:
 		return th.muted.Render("✓✓")
 	case store.StatusRead:
-		// Blue double-check — only arrives if peer has read receipts enabled.
 		return th.readTick.Render("✓✓")
 	case store.StatusFailed:
 		return th.statusErr.Render("⚠")
@@ -1958,7 +1998,6 @@ func min(a, b int) int {
 	return b
 }
 
-// Run starts the Bubble Tea program.
 func Run(bus *app.Bus, eng *engine.Engine, st *store.Store, cfg config.Config, cfgPath string) error {
 	hasSession := eng.HasSession()
 	opts := []tea.ProgramOption{tea.WithAltScreen()}
@@ -1967,5 +2006,6 @@ func Run(bus *app.Bus, eng *engine.Engine, st *store.Store, cfg config.Config, c
 	}
 	p := tea.NewProgram(New(bus, eng, st, hasSession, cfg, cfgPath), opts...)
 	_, err := p.Run()
+	preview.ClearGraphics()
 	return err
 }
