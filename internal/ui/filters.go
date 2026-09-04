@@ -10,59 +10,49 @@ import (
 	"github.com/efolchmontiel/wsp-tui/internal/store"
 )
 
-func (m *Model) selectLastMediaCursor() {
-	m.mediaCursor = -1
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].MediaID != "" || isMediaType(m.messages[i].Type) || looksLikeMediaText(m.messages[i].Text) {
-			m.mediaCursor = i
-			return
-		}
+// Message cursor ([ ]): selects ANY message for reactions / open / download.
+// Previously only hopped media rows — that blocked reacting to text.
+
+func (m *Model) selectLastMsgCursor() {
+	if len(m.messages) == 0 {
+		m.msgCursor = -1
+		return
 	}
+	m.msgCursor = len(m.messages) - 1
 }
 
-func (m *Model) moveMediaCursor(delta int) {
+func (m *Model) moveMsgCursor(delta int) {
 	if len(m.messages) == 0 {
-		m.mediaCursor = -1
+		m.msgCursor = -1
 		return
 	}
-	idxs := make([]int, 0, 8)
-	for i, msg := range m.messages {
-		if msg.MediaID != "" || isMediaType(msg.Type) || looksLikeMediaText(msg.Text) {
-			idxs = append(idxs, i)
-		}
+	if m.msgCursor < 0 || m.msgCursor >= len(m.messages) {
+		m.msgCursor = len(m.messages) - 1
+	} else {
+		m.msgCursor = (m.msgCursor + delta + len(m.messages)*8) % len(m.messages)
 	}
-	if len(idxs) == 0 {
-		m.mediaCursor = -1
-		m.setInfo("No hay adjuntos en este chat")
-		return
-	}
-	pos := len(idxs) - 1
-	for i, idx := range idxs {
-		if idx == m.mediaCursor {
-			pos = i
-			break
-		}
-	}
-	pos = (pos + delta + len(idxs)*8) % len(idxs)
-	m.mediaCursor = idxs[pos]
-	msg := m.messages[m.mediaCursor]
+	msg := m.messages[m.msgCursor]
 	label := msg.Text
 	if label == "" {
 		label = msg.Type
 	}
-	m.setInfo(fmt.Sprintf("Adjunto %d/%d: %s", pos+1, len(idxs), truncate(label, 40)))
+	kind := "msg"
+	if msg.MediaID != "" || isMediaType(msg.Type) || looksLikeMediaText(msg.Text) {
+		kind = "media"
+	}
+	m.setInfo(fmt.Sprintf("%s %d/%d: %s", kind, m.msgCursor+1, len(m.messages), truncate(label, 40)))
 	m.refreshViewport(false)
 }
 
 func (m Model) openSelectedMedia() (tea.Model, tea.Cmd) {
-	if m.mediaCursor < 0 || m.mediaCursor >= len(m.messages) {
-		m.selectLastMediaCursor()
+	if m.msgCursor < 0 || m.msgCursor >= len(m.messages) {
+		m.selectLastMsgCursor()
 	}
-	if m.mediaCursor < 0 || m.mediaCursor >= len(m.messages) {
-		m.setInfo("No hay adjuntos en este chat")
+	if m.msgCursor < 0 || m.msgCursor >= len(m.messages) {
+		m.setInfo("No hay mensajes en este chat")
 		return m, nil
 	}
-	msg := m.messages[m.mediaCursor]
+	msg := m.messages[m.msgCursor]
 	if msg.MediaID != "" {
 		// Same clip already playing / opening → ignore until it finishes.
 		if m.playingMediaID == msg.MediaID {
@@ -82,7 +72,7 @@ func (m Model) openSelectedMedia() (tea.Model, tea.Cmd) {
 		m.setInfo("Sin claves — pidiendo al teléfono…")
 		return m, requestResendCmd(m.eng, msg)
 	}
-	m.setInfo("No hay adjuntos en este chat")
+	m.setInfo("Ese mensaje no tiene adjunto — movete con [ ] o usá o en un audio/imagen")
 	return m, nil
 }
 

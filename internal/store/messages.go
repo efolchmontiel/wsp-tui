@@ -62,7 +62,21 @@ LIMIT ?`, chatID, limit)
 }
 
 // UpsertMessage inserts or updates a message.
+// On conflict, metadata is merged so reactions / link thumbs are not wiped by re-sync.
 func (s *Store) UpsertMessage(ctx context.Context, m Message) error {
+	if m.MetadataJSON == "" {
+		m.MetadataJSON = "{}"
+	}
+	if existing, err := s.GetMessage(ctx, m.ChatID, m.ID); err == nil {
+		m.MetadataJSON = MergeMessageMetadata(existing.MetadataJSON, m.MetadataJSON)
+		if m.MediaID == "" && existing.MediaID != "" {
+			m.MediaID = existing.MediaID
+		}
+	}
+	return s.writeMessage(ctx, m)
+}
+
+func (s *Store) writeMessage(ctx context.Context, m Message) error {
 	if m.MetadataJSON == "" {
 		m.MetadataJSON = "{}"
 	}
@@ -80,7 +94,9 @@ ON CONFLICT(chat_id, id) DO UPDATE SET
     WHEN excluded.status != '' THEN excluded.status
     ELSE messages.status END,
   quoted_message_id = excluded.quoted_message_id,
-  media_id = excluded.media_id,
+  media_id = CASE
+    WHEN excluded.media_id IS NOT NULL AND excluded.media_id != '' THEN excluded.media_id
+    ELSE messages.media_id END,
   is_from_me = excluded.is_from_me,
   is_deleted = excluded.is_deleted,
   metadata_json = excluded.metadata_json

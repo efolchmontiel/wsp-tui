@@ -49,6 +49,20 @@ func TestFormatReactions(t *testing.T) {
 	}
 }
 
+func TestMergeMessageMetadataKeepsReactions(t *testing.T) {
+	base, err := MergeReactionIntoMetadata(`{"media":{"kind":"image"}}`, "peer@s.whatsapp.net", "😂")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := MergeMessageMetadata(base, `{"media":{"kind":"image","direct_path":"/y"}}`)
+	if FormatReactions(got) != "😂" {
+		t.Fatalf("reactions wiped: %s", got)
+	}
+	if !strings.Contains(got, "/y") {
+		t.Fatalf("incoming media lost: %s", got)
+	}
+}
+
 func TestApplyReaction(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(filepath.Join(dir, "t.db"))

@@ -26,6 +26,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	logout := flag.Bool("logout", false, "logout and delete local WhatsApp session")
 	reset := flag.Bool("reset", false, "delete local session database (and related files)")
+	retention := flag.String("retention", "", "set local_retention and exit (1week|2weeks|1month|3months|6months|1year|2years|never)")
 	flag.Parse()
 
 	if *showVersion {
@@ -39,6 +40,19 @@ func main() {
 	}
 	if err := config.EnsureDefault(p.ConfigFile); err != nil {
 		fatal(err)
+	}
+
+	if *retention != "" {
+		cfg, err := config.Load(p.ConfigFile)
+		if err != nil {
+			fatal(err)
+		}
+		cfg.LocalRetention = config.ParseRetention(*retention)
+		if err := config.Save(p.ConfigFile, cfg); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("local_retention = %s (%s)\n", cfg.LocalRetention, cfg.LocalRetention.Label())
+		return
 	}
 
 	logger, logFile, err := logging.Setup(p.LogFile, *debug)

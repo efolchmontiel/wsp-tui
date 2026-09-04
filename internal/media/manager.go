@@ -38,6 +38,24 @@ func (m *Manager) AllocPath(kind, fileName string) (string, error) {
 	return filepath.Join(dir, base), nil
 }
 
+// ThumbPath returns a stable path for a message link/video thumbnail.
+func (m *Manager) ThumbPath(chatID, msgID string) (string, error) {
+	dir := filepath.Join(m.paths.MediaDir, "thumbs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	safe := sanitizeFileName(chatID + "_" + msgID + ".jpg")
+	return filepath.Join(dir, safe), nil
+}
+
+// MediaDir exposes the media root.
+func (m *Manager) MediaDir() string {
+	if m == nil {
+		return ""
+	}
+	return m.paths.MediaDir
+}
+
 func sanitizeFileName(name string) string {
 	name = filepath.Base(strings.TrimSpace(name))
 	if name == "" || name == "." || name == ".." {

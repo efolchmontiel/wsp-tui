@@ -13,9 +13,80 @@ type Reaction struct {
 	Emoji  string `json:"emoji"`
 }
 
+// LinkPreview is WhatsApp's unfurled link card (YouTube, etc.).
+type LinkPreview struct {
+	Title string `json:"title,omitempty"`
+	Desc  string `json:"desc,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Thumb string `json:"thumb,omitempty"` // local JPEG path
+}
+
 type metadataEnvelope struct {
-	Media     json.RawMessage `json:"media,omitempty"`
-	Reactions []Reaction      `json:"reactions,omitempty"`
+	Media        json.RawMessage `json:"media,omitempty"`
+	Reactions    []Reaction      `json:"reactions,omitempty"`
+	Link         *LinkPreview    `json:"link,omitempty"`
+	PreviewThumb string          `json:"preview_thumb,omitempty"` // local JPEG for image/video/link
+}
+
+// ParseLinkPreview reads link card metadata.
+func ParseLinkPreview(metadataJSON string) (LinkPreview, bool) {
+	if strings.TrimSpace(metadataJSON) == "" || metadataJSON == "{}" {
+		return LinkPreview{}, false
+	}
+	var env metadataEnvelope
+	if err := json.Unmarshal([]byte(metadataJSON), &env); err != nil || env.Link == nil {
+		return LinkPreview{}, false
+	}
+	if env.Link.Title == "" && env.Link.URL == "" && env.Link.Thumb == "" && env.Link.Desc == "" {
+		return LinkPreview{}, false
+	}
+	return *env.Link, true
+}
+
+// ParsePreviewThumb returns a local thumbnail path for inline rendering.
+func ParsePreviewThumb(metadataJSON string) string {
+	if strings.TrimSpace(metadataJSON) == "" || metadataJSON == "{}" {
+		return ""
+	}
+	var env metadataEnvelope
+	if err := json.Unmarshal([]byte(metadataJSON), &env); err != nil {
+		return ""
+	}
+	if env.Link != nil && env.Link.Thumb != "" {
+		return env.Link.Thumb
+	}
+	return env.PreviewThumb
+}
+
+// MergeLinkIntoMetadata stores/replaces the link preview card.
+func MergeLinkIntoMetadata(metadataJSON string, link LinkPreview) (string, error) {
+	env := metadataEnvelope{}
+	if strings.TrimSpace(metadataJSON) != "" && metadataJSON != "{}" {
+		_ = json.Unmarshal([]byte(metadataJSON), &env)
+	}
+	env.Link = &link
+	if link.Thumb != "" {
+		env.PreviewThumb = link.Thumb
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		return metadataJSON, err
+	}
+	return string(b), nil
+}
+
+// MergePreviewThumbIntoMetadata sets preview_thumb without clearing other fields.
+func MergePreviewThumbIntoMetadata(metadataJSON, thumbPath string) (string, error) {
+	env := metadataEnvelope{}
+	if strings.TrimSpace(metadataJSON) != "" && metadataJSON != "{}" {
+		_ = json.Unmarshal([]byte(metadataJSON), &env)
+	}
+	env.PreviewThumb = thumbPath
+	b, err := json.Marshal(env)
+	if err != nil {
+		return metadataJSON, err
+	}
+	return string(b), nil
 }
 
 // ParseReactions reads reaction entries from message metadata_json.
@@ -95,6 +166,74 @@ func MergeReactionIntoMetadata(metadataJSON, sender, emoji string) (string, erro
 	return string(b), nil
 }
 
+// MergeMessageMetadata combines existing + incoming metadata without dropping
+// reactions / link / thumbs when the incoming blob omits them (common on re-sync).
+func MergeMessageMetadata(existing, incoming string) string {
+	ex := parseEnvelope(existing)
+	in := parseEnvelope(incoming)
+	out := ex
+	if len(in.Media) > 0 && string(in.Media) != "null" {
+		out.Media = in.Media
+	}
+	if in.Link != nil {
+		out.Link = in.Link
+	}
+	if in.PreviewThumb != "" {
+		out.PreviewThumb = in.PreviewThumb
+	}
+	if len(in.Reactions) > 0 {
+		// Incoming reactions replace same senders; keep others from existing.
+		bySender := map[string]Reaction{}
+		order := make([]string, 0, len(ex.Reactions)+len(in.Reactions))
+		for _, r := range ex.Reactions {
+			if r.Sender == "" || strings.TrimSpace(r.Emoji) == "" {
+				continue
+			}
+			bySender[r.Sender] = r
+			order = append(order, r.Sender)
+		}
+		for _, r := range in.Reactions {
+			if r.Sender == "" {
+				continue
+			}
+			if strings.TrimSpace(r.Emoji) == "" {
+				delete(bySender, r.Sender)
+				continue
+			}
+			if _, ok := bySender[r.Sender]; !ok {
+				order = append(order, r.Sender)
+			}
+			bySender[r.Sender] = r
+		}
+		merged := make([]Reaction, 0, len(bySender))
+		seen := map[string]bool{}
+		for _, s := range order {
+			if r, ok := bySender[s]; ok && !seen[s] {
+				merged = append(merged, r)
+				seen[s] = true
+			}
+		}
+		out.Reactions = merged
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		if strings.TrimSpace(incoming) != "" {
+			return incoming
+		}
+		return existing
+	}
+	return string(b)
+}
+
+func parseEnvelope(metadataJSON string) metadataEnvelope {
+	env := metadataEnvelope{}
+	if strings.TrimSpace(metadataJSON) == "" || metadataJSON == "{}" {
+		return env
+	}
+	_ = json.Unmarshal([]byte(metadataJSON), &env)
+	return env
+}
+
 // ApplyReaction attaches or removes a reaction on the target message.
 // Returns the updated target message (or zero + false if the target is missing).
 func (s *Store) ApplyReaction(ctx context.Context, chatID, targetID, sender, emoji string) (Message, bool, error) {
@@ -110,7 +249,8 @@ func (s *Store) ApplyReaction(ctx context.Context, chatID, targetID, sender, emo
 		return Message{}, false, err
 	}
 	msg.MetadataJSON = merged
-	if err := s.UpsertMessage(ctx, msg); err != nil {
+	// Bypass UpsertMessage merge path: write reactions directly so empty emoji removals stick.
+	if err := s.writeMessage(ctx, msg); err != nil {
 		return Message{}, false, err
 	}
 	return msg, true, nil

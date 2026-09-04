@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -12,8 +13,11 @@ import (
 	"github.com/efolchmontiel/wsp-tui/internal/jidutil"
 	"github.com/efolchmontiel/wsp-tui/internal/media"
 	"github.com/efolchmontiel/wsp-tui/internal/msgutil"
+	"github.com/efolchmontiel/wsp-tui/internal/preview"
 	"github.com/efolchmontiel/wsp-tui/internal/store"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -207,7 +211,8 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 
 	preview := ""
 	msgs := conv.GetMessages()
-	// Persist messages; keep UI responsive by batching notifications.
+	// Two-pass: store normal messages first, then apply reaction events so targets exist.
+	var reactionEvts []*events.Message
 	for i, hm := range msgs {
 		if hm == nil || hm.GetMessage() == nil || client == nil {
 			continue
@@ -217,7 +222,8 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 			s.logger.Debug("parse history msg", "err", err)
 			continue
 		}
-		if s.tryHandleReaction(ctx, parsed) {
+		if msgutil.IsReaction(parsed.Message) {
+			reactionEvts = append(reactionEvts, parsed)
 			continue
 		}
 		sm, err := s.storeParsed(ctx, parsed)
@@ -234,6 +240,9 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 			cp := sm
 			s.bus.Publish(app.Event{Kind: app.EventMessageUpserted, Msg: &cp, ChatID: sm.ChatID})
 		}
+	}
+	for _, re := range reactionEvts {
+		_ = s.tryHandleReaction(ctx, re)
 	}
 
 	chat := store.Chat{
@@ -385,6 +394,70 @@ func (s *Syncer) resolveReaction(ctx context.Context, evt *events.Message) (targ
 	return key.GetID(), dec.GetText(), true
 }
 
+// applyEmbeddedReactions reads WebMessageInfo.Reactions (history sync) onto the target row.
+func (s *Syncer) applyEmbeddedReactions(ctx context.Context, evt *events.Message, sm store.Message) (store.Message, bool) {
+	if evt == nil || evt.SourceWebMsg == nil {
+		return sm, false
+	}
+	list := evt.SourceWebMsg.GetReactions()
+	if len(list) == 0 {
+		return sm, false
+	}
+	changed := false
+	out := sm
+	for _, r := range list {
+		if r == nil {
+			continue
+		}
+		emoji := strings.TrimSpace(r.GetText())
+		sender := embeddedReactionSender(r.GetKey(), evt.Info.Chat, s.ownJID())
+		if sender == "" {
+			continue
+		}
+		updated, applied, err := s.store.ApplyReaction(ctx, sm.ChatID, sm.ID, sender, emoji)
+		if err != nil {
+			s.logger.Debug("embedded reaction", "err", err, "id", sm.ID)
+			continue
+		}
+		if applied {
+			out = updated
+			changed = true
+		}
+	}
+	return out, changed
+}
+
+func (s *Syncer) ownJID() string {
+	client := s.clientOrNil()
+	if client == nil || client.Store == nil || client.Store.ID == nil {
+		return ""
+	}
+	return client.Store.ID.ToNonAD().String()
+}
+
+func embeddedReactionSender(key *waCommon.MessageKey, chat types.JID, own string) string {
+	if key == nil {
+		return ""
+	}
+	if p := strings.TrimSpace(key.GetParticipant()); p != "" {
+		return p
+	}
+	if key.GetFromMe() {
+		if own != "" {
+			return own
+		}
+		return ""
+	}
+	// 1:1 chat: the other party reacted.
+	if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer {
+		return chat.ToNonAD().String()
+	}
+	if rj := strings.TrimSpace(key.GetRemoteJID()); rj != "" {
+		return rj
+	}
+	return ""
+}
+
 func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Message, error) {
 	typ, text := msgutil.ClassifyType(evt.Message)
 	if text == "" && typ == store.TypeOther {
@@ -422,8 +495,45 @@ func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Me
 		}
 	}
 
+	if link, thumb := extractLinkPreview(evt.Message); link.Title != "" || link.URL != "" || len(thumb) > 0 {
+		if s.media != nil && len(thumb) > 0 {
+			if path, err := s.media.ThumbPath(sm.ChatID, sm.ID); err == nil {
+				if werr := writeThumbFile(path, thumb); werr == nil {
+					link.Thumb = path
+				}
+			}
+		}
+		meta := sm.MetadataJSON
+		if meta == "" {
+			meta = "{}"
+		}
+		if merged, err := store.MergeLinkIntoMetadata(meta, link); err == nil {
+			sm.MetadataJSON = merged
+		}
+	} else if s.media != nil {
+		// Image/video JPEG thumb for inline preview before full download.
+		if thumb := mediaJPEGThumb(evt.Message); len(thumb) > 0 {
+			if path, err := s.media.ThumbPath(sm.ChatID, sm.ID); err == nil {
+				if werr := writeThumbFile(path, thumb); werr == nil {
+					meta := sm.MetadataJSON
+					if meta == "" {
+						meta = "{}"
+					}
+					if merged, err := store.MergePreviewThumbIntoMetadata(meta, path); err == nil {
+						sm.MetadataJSON = merged
+					}
+				}
+			}
+		}
+	}
+
 	if err := s.store.UpsertMessage(ctx, sm); err != nil {
 		return store.Message{}, err
+	}
+
+	// History sync embeds reactions on WebMessageInfo — apply after the row exists.
+	if updated, ok := s.applyEmbeddedReactions(ctx, evt, sm); ok {
+		sm = updated
 	}
 
 	if hasMedia {
@@ -579,4 +689,44 @@ func (s *Syncer) fixSpecialChats(ctx context.Context) {
 	if changed {
 		s.bus.Publish(app.Event{Kind: app.EventChatsDirty})
 	}
+}
+
+func extractLinkPreview(msg *waE2E.Message) (store.LinkPreview, []byte) {
+	if msg == nil {
+		return store.LinkPreview{}, nil
+	}
+	ext := msg.GetExtendedTextMessage()
+	if ext == nil {
+		return store.LinkPreview{}, nil
+	}
+	link := store.LinkPreview{
+		Title: strings.TrimSpace(ext.GetTitle()),
+		Desc:  strings.TrimSpace(ext.GetDescription()),
+		URL:   strings.TrimSpace(ext.GetMatchedText()),
+	}
+	return link, ext.GetJPEGThumbnail()
+}
+
+func mediaJPEGThumb(msg *waE2E.Message) []byte {
+	if msg == nil {
+		return nil
+	}
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetJPEGThumbnail()
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		return vid.GetJPEGThumbnail()
+	}
+	if st := msg.GetStickerMessage(); st != nil {
+		// stickers usually have no JPEG thumb
+		return nil
+	}
+	return nil
+}
+
+func writeThumbFile(path string, jpegBytes []byte) error {
+	if err := preview.WriteJPEGThumb(path, jpegBytes); err != nil {
+		return os.WriteFile(path, jpegBytes, 0o600)
+	}
+	return nil
 }

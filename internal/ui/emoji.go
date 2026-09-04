@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/efolchmontiel/wsp-tui/internal/app"
 	"github.com/efolchmontiel/wsp-tui/internal/engine"
+	"github.com/efolchmontiel/wsp-tui/internal/giphy"
 )
 
 type emojiPickerMode int
@@ -57,18 +62,38 @@ var emojiCategories = []emojiCategory{
 
 const emojiCols = 10
 
+type (
+	giphySearchMsg struct {
+		query   string
+		results []giphy.Result
+		err     error
+	}
+	giphySendMsg struct {
+		path string
+		err  error
+	}
+)
+
 func (m *Model) openEmojiPicker(mode emojiPickerMode) {
 	m.pickingEmoji = true
 	m.emojiMode = mode
 	m.emojiCat = 0
 	m.emojiIdx = 0
 	m.emojiGIF = false
+	m.gifResults = nil
+	m.gifCursor = 0
+	m.gifBusy = false
+	m.gifErr = ""
+	m.gifQuery.SetValue("")
+	m.gifQuery.Blur()
 	m.input.Blur()
 }
 
 func (m *Model) closeEmojiPicker() {
 	m.pickingEmoji = false
 	m.emojiGIF = false
+	m.gifQuery.Blur()
+	m.gifBusy = false
 	if m.emojiMode == emojiModeInsert {
 		m.focus = focusInput
 		m.applyFocus()
@@ -137,6 +162,10 @@ func emojiGridMove(idx, n, cols, dRow, dCol int) int {
 	return clampEmojiIdx(row*cols+col, n)
 }
 
+func (m Model) hasGiphyKey() bool {
+	return strings.TrimSpace(m.cfg.GiphyAPIKey) != ""
+}
+
 func (m Model) viewEmojiPicker() string {
 	title := "Insertar emoji"
 	if m.emojiMode == emojiModeReact {
@@ -160,9 +189,7 @@ func (m Model) viewEmojiPicker() string {
 
 	var body string
 	if m.emojiGIF {
-		body = m.theme.muted.Render("Elegí un archivo .gif del disco.") + "\n\n" +
-			m.theme.accent.Render("Enter") + " abrir selector (solo .gif)\n" +
-			m.theme.muted.Render("Tip: Ctrl+O también adjunta cualquier media.")
+		body = m.viewGIFTab()
 	} else {
 		items := m.emojiItems()
 		var b strings.Builder
@@ -190,6 +217,43 @@ func (m Model) viewEmojiPicker() string {
 		box.Render(tabLine+"\n\n"+body) + "\n\n" + help
 }
 
+func (m Model) viewGIFTab() string {
+	var b strings.Builder
+	if m.hasGiphyKey() {
+		b.WriteString(m.theme.muted.Render("Buscar en Giphy (opcional: también podés pegar un archivo local)"))
+		b.WriteString("\n")
+		b.WriteString(m.gifQuery.View())
+		b.WriteString("\n\n")
+		if m.gifBusy {
+			b.WriteString(m.theme.accent.Render("Buscando…"))
+		} else if m.gifErr != "" {
+			b.WriteString(m.theme.statusErr.Render(m.gifErr))
+		} else if len(m.gifResults) == 0 {
+			b.WriteString(m.theme.muted.Render("Escribí y Enter para buscar · f = archivo .gif del disco"))
+		} else {
+			for i, r := range m.gifResults {
+				line := truncate(r.Title, 48)
+				if i == m.gifCursor {
+					line = m.theme.sidebarSel.Render("▸ " + line)
+				} else {
+					line = "  " + line
+				}
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+			b.WriteString(m.theme.muted.Render("↑↓ elegir · Enter enviar · f archivo local"))
+		}
+	} else {
+		b.WriteString(m.theme.muted.Render("Sin giphy_api_key en config.toml — modo archivo local."))
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.accent.Render("Enter"))
+		b.WriteString(" abrir selector (solo .gif)\n")
+		b.WriteString(m.theme.muted.Render("Tip: agregá giphy_api_key = \"…\" para buscar online."))
+	}
+	return b.String()
+}
+
 func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
@@ -203,6 +267,7 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "shift+tab":
 		if m.emojiGIF {
 			m.emojiGIF = false
+			m.gifQuery.Blur()
 			if msg.String() == "tab" {
 				m.emojiCat = 0
 			} else {
@@ -211,12 +276,14 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if msg.String() == "tab" {
 			if m.emojiCat >= len(emojiCategories)-1 {
 				m.emojiGIF = true
+				m.enterGIFTab()
 			} else {
 				m.emojiCat++
 			}
 		} else { // shift+tab
 			if m.emojiCat <= 0 {
 				m.emojiGIF = true
+				m.enterGIFTab()
 			} else {
 				m.emojiCat--
 			}
@@ -234,24 +301,39 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "up", "k":
+		if m.emojiGIF && m.hasGiphyKey() && len(m.gifResults) > 0 {
+			if m.gifCursor > 0 {
+				m.gifCursor--
+			}
+			return m, nil
+		}
 		if !m.emojiGIF {
 			m.emojiIdx = emojiGridMove(m.emojiIdx, len(m.emojiItems()), emojiCols, -1, 0)
 		}
 		return m, nil
 	case "down", "j":
+		if m.emojiGIF && m.hasGiphyKey() && len(m.gifResults) > 0 {
+			if m.gifCursor < len(m.gifResults)-1 {
+				m.gifCursor++
+			}
+			return m, nil
+		}
 		if !m.emojiGIF {
 			m.emojiIdx = emojiGridMove(m.emojiIdx, len(m.emojiItems()), emojiCols, 1, 0)
 		}
 		return m, nil
+	case "f":
+		if m.emojiGIF {
+			m.closeEmojiPicker()
+			return m.openGIFPicker()
+		}
 	case "backspace", "delete":
 		if m.emojiMode == emojiModeReact && !m.emojiGIF {
 			return m.applyEmojiSelection("")
 		}
-		return m, nil
 	case "enter", " ":
 		if m.emojiGIF {
-			m.closeEmojiPicker()
-			return m.openGIFPicker()
+			return m.confirmGIFTab()
 		}
 		items := m.emojiItems()
 		if len(items) == 0 {
@@ -260,7 +342,110 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.emojiIdx = clampEmojiIdx(m.emojiIdx, len(items))
 		return m.applyEmojiSelection(items[m.emojiIdx])
 	}
+	if m.emojiGIF && m.hasGiphyKey() {
+		var cmd tea.Cmd
+		m.gifQuery, cmd = m.gifQuery.Update(msg)
+		return m, cmd
+	}
 	return m, nil
+}
+
+func (m *Model) enterGIFTab() {
+	m.gifErr = ""
+	if m.hasGiphyKey() {
+		m.gifQuery.Focus()
+	}
+}
+
+func (m Model) confirmGIFTab() (tea.Model, tea.Cmd) {
+	if !m.hasGiphyKey() {
+		m.closeEmojiPicker()
+		return m.openGIFPicker()
+	}
+	if len(m.gifResults) > 0 {
+		if m.gifCursor < 0 || m.gifCursor >= len(m.gifResults) {
+			m.gifCursor = 0
+		}
+		sel := m.gifResults[m.gifCursor]
+		m.gifBusy = true
+		m.gifErr = ""
+		m.setInfo("Descargando GIF…")
+		return m, downloadGiphyCmd(sel.URL)
+	}
+	return m.runGiphySearch()
+}
+
+func (m Model) runGiphySearch() (tea.Model, tea.Cmd) {
+	q := strings.TrimSpace(m.gifQuery.Value())
+	if q == "" {
+		m.gifErr = "Escribí un término de búsqueda"
+		return m, nil
+	}
+	m.gifBusy = true
+	m.gifErr = ""
+	m.gifResults = nil
+	key := m.cfg.GiphyAPIKey
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		res, err := giphy.Search(ctx, key, q, 12)
+		return giphySearchMsg{query: q, results: res, err: err}
+	}
+}
+
+func downloadGiphyCmd(gifURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		path, err := giphy.DownloadToTemp(ctx, gifURL)
+		return giphySendMsg{path: path, err: err}
+	}
+}
+
+func (m Model) applyGiphySearch(msg giphySearchMsg) (tea.Model, tea.Cmd) {
+	if !m.pickingEmoji || !m.emojiGIF {
+		return m, nil
+	}
+	m.gifBusy = false
+	if msg.err != nil {
+		m.gifErr = msg.err.Error()
+		m.gifResults = nil
+		return m, nil
+	}
+	m.gifResults = msg.results
+	m.gifCursor = 0
+	if len(msg.results) == 0 {
+		m.gifErr = "Sin resultados"
+	}
+	return m, nil
+}
+
+func (m Model) applyGiphySend(msg giphySendMsg) (tea.Model, tea.Cmd) {
+	m.gifBusy = false
+	if msg.err != nil {
+		m.gifErr = msg.err.Error()
+		return m, nil
+	}
+	path := msg.path
+	if path == "" {
+		m.gifErr = "descarga vacía"
+		return m, nil
+	}
+	m.closeEmojiPicker()
+	if m.selectedID == "" {
+		_ = os.Remove(path)
+		m.errMsg = "Elegí un chat antes de enviar un GIF"
+		m.modal = modalError
+		return m, nil
+	}
+	m.uploadNote = "Enviando GIF…"
+	eng := m.eng
+	chat := m.selectedID
+	return m, func() tea.Msg {
+		defer os.Remove(path)
+		_, err := eng.SendFile(context.Background(), chat, path, "")
+		return sendResultMsg{err: err}
+	}
 }
 
 func (m Model) applyEmojiSelection(emoji string) (tea.Model, tea.Cmd) {
@@ -271,7 +456,7 @@ func (m Model) applyEmojiSelection(emoji string) (tea.Model, tea.Cmd) {
 			m.setInfo("Elegí un mensaje con [ ]")
 			return m, nil
 		}
-		idx := m.mediaCursor
+		idx := m.msgCursor
 		if idx < 0 || idx >= len(m.messages) {
 			idx = len(m.messages) - 1
 		}
@@ -280,7 +465,7 @@ func (m Model) applyEmojiSelection(emoji string) (tea.Model, tea.Cmd) {
 		if label == "" {
 			label = "(quitar)"
 		}
-		m.setInfo("Reacción " + label)
+		m.setInfo("Reacción " + label + " → " + truncate(target.Text, 28))
 		return m, sendReactionCmd(m.eng, m.selectedID, target.ID, emoji)
 	}
 	if emoji != "" {
@@ -315,4 +500,13 @@ func sendReactionCmd(eng *engine.Engine, chatID, msgID, emoji string) tea.Cmd {
 		err := eng.SendReaction(chatID, msgID, emoji)
 		return sendResultMsg{err: err}
 	}
+}
+
+func newGIFQueryInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "buscar gifs…"
+	ti.CharLimit = 50
+	ti.Width = 40
+	ti.Prompt = "GIF › "
+	return ti
 }

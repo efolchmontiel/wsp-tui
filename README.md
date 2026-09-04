@@ -13,16 +13,17 @@ Repo: [github.com/efolchmontiel/wsp-tui](https://github.com/efolchmontiel/wsp-tu
 ## Características
 
 - Chats 1:1 y grupos, con filtros: **Todos / Favoritos / Grupos / Novedades (comunidades) / Archivados**
-- Envío de texto, emojis (`Ctrl+E`), GIF (archivo `.gif`), adjuntos (`Ctrl+O`) y **notas de voz**
-- **Reacciones** a mensajes (`r` + emoji; se muestran junto al texto)
+- Envío de **texto**, **emojis** (`Ctrl+E`) y **reacciones** (`[` / `]` + `r`)
+- **GIF**: recibir (preview animado) y enviar — búsqueda **Giphy** (API key opcional) o archivo `.gif` local
+- Adjuntos (`Ctrl+O`), **notas de voz** (`v`), abrir/descargar media (`o` / `d`)
+- **Previews inline** de imagen/GIF y **link embeds** (YouTube, etc.) vía Kitty / iTerm2 / Sixel / halfblocks
 - Ticks de estado: enviado / entregado / leído (azul)
 - Mensajes temporales (Off → 24h → 7d → 90d) en 1:1 y grupos
 - Archivar, favoritos (pin), búsqueda de chats/mensajes/contactos
 - Agregar contacto por teléfono y verificar WhatsApp
-- Media: abrir / descargar / recuperar; imágenes chicas se bajan solas
 - Llamadas: banner entrante (amarillo) o perdida (rojo) — no se contestan desde la TUI
 - Notificaciones de escritorio + sonido (Linux/`notify-send`)
-- Retención local configurable (`week` / `month` / `3months` / `year` / `never`)
+- Retención local configurable (`R` abre modal): presets + número/unidad custom; default **3 meses**
 - Temas y pronombre Él/Ella para etiquetas del chat
 - Sesión Multi-Device por QR o código de pairing
 - Linux, Arch y Windows
@@ -109,6 +110,7 @@ wsp-tui --version
 wsp-tui --debug      # log a archivo
 wsp-tui --logout     # cerrar sesión WhatsApp
 wsp-tui --reset      # borrar sesión local
+wsp-tui --retention 3months   # setear retención y salir
 ```
 
 Aliases tras `make install`: `wstui`, `whatstui`.
@@ -118,6 +120,7 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 | Tecla | Acción |
 |-------|--------|
 | `1`–`5` | Todos / Favoritos / Grupos / Novedades / Archivados |
+| `R` | Modal de **retención local** (presets con `*` + personalizado N semana/mes/año) |
 | `Ctrl+E` | Panel **emoji / GIF** (insertar en el input) |
 | `r` | **Reaccionar** al mensaje seleccionado (`[` / `]`) |
 | `e` | Archivar / desarchivar |
@@ -127,8 +130,8 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 | `/` o `Ctrl+F` | Buscar |
 | `x` | Borrar chat **local** |
 | `Ctrl+O` | Adjuntar archivo |
-| `[` / `]` | Mensaje / adjunto anterior / siguiente |
-| `o` / `d` | Abrir / descargar media |
+| `[` / `]` | **Seleccionar mensaje** (texto o media) para reaccionar / abrir |
+| `o` / `d` | Abrir / descargar media del mensaje seleccionado |
 | `v` | Nota de voz |
 | `t` | Tema |
 | `g` | Pronombre Él/Ella |
@@ -137,9 +140,11 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 
 ### Emoji, reacciones y GIF
 
-1. **Enviar emoji:** en el input, `Ctrl+E` → elegí con flechas → `Enter` inserta → `Enter` otra vez envía.
-2. **GIF:** `Ctrl+E` → `Tab` hasta **GIF** → `Enter` → elegí un `.gif` del disco.
-3. **Reaccionar:** con `[` / `]` apuntá el mensaje → `r` → elegí emoji → `Enter`. `Backspace` en el panel quita tu reacción.
+1. **Enviar emoji:** en el input, `Ctrl+E` → flechas → `Enter` inserta → `Enter` otra vez envía.
+2. **GIF:** `Ctrl+E` → `Tab` hasta **GIF**.
+   - Con `giphy_api_key` en el config: escribí, `Enter` busca, ↑↓ elegí, `Enter` envía. `f` = archivo local.
+   - Sin key: `Enter` abre el selector de `.gif` del disco.
+3. **Reaccionar:** `[` / `]` apunta **cualquier** mensaje (también texto) → `r` → emoji → `Enter`. `Backspace` en el panel quita tu reacción.
 
 Llamadas: banner amarillo = entrante · rojo claro = perdida (no se contestan desde la TUI).
 
@@ -157,17 +162,35 @@ theme = "dark"
 mouse = true
 
 # Limpieza del cache LOCAL (no toca el teléfono).
-# week | month | 3months | year | never
+# Ejemplos: 1week, 2weeks, 1month, 3months, 6months, 1year, 2years, never
+# También cualquier N+unidad: 5weeks, 4months, 3years
 local_retention = "3months"
+
+# Previews inline (Kitty / iTerm2 / Sixel / halfblocks)
+show_media_previews = true
+preview_protocol = "auto"
+
+# Opcional — https://developers.giphy.com/dashboard/
+# Vacío = solo archivos .gif locales
+giphy_api_key = ""
 ```
 
-| Valor | Significado |
-|-------|-------------|
-| `week` | borra local > 1 semana |
-| `month` | > 1 mes |
-| `3months` | > 3 meses (**default**) |
-| `year` | > 1 año |
+| Valor retención | Significado |
+|-----------------|-------------|
+| `1week` … `2years` | presets del modal |
+| `5weeks`, `4months`, `3years`, … | personalizado (cualquier N + unidad) |
 | `never` | no limpia nunca |
+| `3months` | **default** |
+
+En la TUI: tecla **`R`** abre un modal (como `?` ayuda): `*` marca la opción activa, podés elegir preset o personalizado (número + ←→ semana/mes/año).
+
+| Valor `preview_protocol` | Uso |
+|--------------------------|-----|
+| `auto` | detecta Kitty → iTerm2 → Sixel → halfblocks (**default**) |
+| `kitty` / `iterm2` / `sixel` | forzar protocolo |
+| `halfblocks` | fallback Unicode (cualquier terminal) |
+
+`giphy_api_key` es **opcional**. Sin ella, el tab GIF sigue funcionando con archivos locales.
 
 ## Datos locales
 
@@ -192,6 +215,14 @@ Ahí viven `session.db`, `whatstui.db` y `media/`.
 ## Licencia
 
 MIT (app). whatsmeow: MPL-2.0. Ver [docs/licenses.md](docs/licenses.md).
+
+## Agradecimientos
+
+wsp-tui se apoya en el trabajo de la comunidad WhatsApp/Go:
+
+- [WhatsMiau](https://github.com/verbeux-ai/whatsmiau) — base de inspiración del proyecto
+- [whatsmeow](https://github.com/tulir/whatsmeow) — protocolo Multi-Device
+- [Bubble Tea](https://github.com/charmbracelet/bubbletea) — TUI
 
 ## Docs
 

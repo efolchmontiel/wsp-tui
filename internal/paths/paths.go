@@ -66,6 +66,7 @@ func Resolve() (Paths, error) {
 		filepath.Join(p.MediaDir, "audio"),
 		filepath.Join(p.MediaDir, "documents"),
 		filepath.Join(p.MediaDir, "stickers"),
+		filepath.Join(p.MediaDir, "thumbs"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
