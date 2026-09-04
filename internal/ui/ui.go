@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/efolchmontiel/wsp-tui/internal/app"
 	"github.com/efolchmontiel/wsp-tui/internal/config"
 	"github.com/efolchmontiel/wsp-tui/internal/engine"
@@ -21,7 +22,13 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
-const messagePageSize = 50
+const (
+	messagePageSize = 50
+	// Each sidebar chat occupies name + preview.
+	sidebarChatRows = 2
+	// filter bar + "Chats" title inside the bordered sidebar.
+	sidebarHeaderRows = 2
+)
 
 type focusPane int
 
@@ -82,6 +89,13 @@ type Model struct {
 	filePicker  filepicker.Model
 	uploadNote  string
 	mediaHint   string // last media state tip
+
+	// Emoji / GIF picker + reactions
+	pickingEmoji bool
+	emojiMode    emojiPickerMode
+	emojiCat     int
+	emojiIdx     int
+	emojiGIF     bool
 
 	// Phase 5: UX
 	searching    bool
@@ -163,7 +177,7 @@ type (
 // New creates the root model.
 func New(bus *app.Bus, eng *engine.Engine, st *store.Store, hasSession bool, cfg config.Config, cfgPath string) Model {
 	ti := textinput.New()
-	ti.Placeholder = "Escribe un mensaje…  (Enter enviar · / buscar · ? ayuda)"
+	ti.Placeholder = "Escribe… (Enter enviar · Ctrl+E emoji/GIF · / buscar · ? ayuda)"
 	ti.CharLimit = 4096
 	ti.Prompt = "› "
 
@@ -451,7 +465,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadChatsCmd(m.store, m.chatFilter)
 
 	case tea.MouseMsg:
-		if m.pickingFile || m.searching || m.modal != modalNone {
+		if m.pickingFile || m.pickingEmoji || m.searching || m.modal != modalNone {
 			return m, nil
 		}
 		needLogin := m.showLogin && m.state != app.StateConnected &&
@@ -475,6 +489,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.searching {
 			return m.updateSearchKeys(msg)
+		}
+		if m.pickingEmoji {
+			return m.updateEmojiPickerKeys(msg)
 		}
 		if m.pickingFile {
 			return m.updatePickerKeys(msg)
@@ -538,7 +555,9 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 		return m.scheduleChatsReload()
 	case app.EventMessageUpserted:
 		if evt.Msg != nil {
-			m.patchChatPreview(*evt.Msg)
+			if !evt.IsReaction {
+				m.patchChatPreview(*evt.Msg)
+			}
 			if evt.Msg.ChatID == m.selectedID {
 				m.upsertLocalMessage(*evt.Msg)
 				if m.mediaCursor < 0 {
@@ -546,7 +565,7 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 				}
 				m.refreshViewport(false)
 			}
-			if m.desktopNotify && !evt.Msg.IsFromMe && evt.Msg.ChatID != m.selectedID {
+			if !evt.IsReaction && m.desktopNotify && !evt.Msg.IsFromMe && evt.Msg.ChatID != m.selectedID {
 				title := "WhatsTUI"
 				for _, c := range m.chats {
 					if c.ID == evt.Msg.ChatID {
@@ -567,6 +586,9 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 				m.setInfo("Adjunto recuperado — abriendo…")
 				return tea.Batch(m.scheduleChatsReload(), openMediaCmd(m.eng, id))
 			}
+		}
+		if evt.IsReaction {
+			return nil
 		}
 		return m.scheduleChatsReload()
 	case app.EventMessageStatus:
@@ -731,6 +753,18 @@ func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "ctrl+o":
 		return m.openFilePicker()
+	case "ctrl+e":
+		m.openEmojiPicker(emojiModeInsert)
+		return m, nil
+	case "r":
+		if m.focus != focusInput || strings.TrimSpace(m.input.Value()) == "" {
+			if m.selectedID == "" || len(m.messages) == 0 {
+				m.setInfo("Abrí un chat y elegí un mensaje ([ ])")
+				return m, nil
+			}
+			m.openEmojiPicker(emojiModeReact)
+			return m, nil
+		}
 	case "ctrl+f":
 		return m.openSearch()
 	case "a":
@@ -969,6 +1003,7 @@ func (m Model) openFilePicker() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.pickingFile = true
+	m.filePicker.AllowedTypes = nil // any file
 	m.filePicker.Height = max(8, m.height-8)
 	return m, m.filePicker.Init()
 }
@@ -1145,6 +1180,13 @@ func (m Model) updateMessageKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		mod, c := m.openOrRecoverMedia()
 		return mod, tea.Batch(cmd, c)
+	case "r":
+		if m.selectedID == "" || len(m.messages) == 0 {
+			m.setInfo("Abrí un chat y elegí un mensaje ([ ])")
+			return m, cmd
+		}
+		m.openEmojiPicker(emojiModeReact)
+		return m, nil
 	case "d":
 		mod, c := m.downloadOrRecoverMedia()
 		return mod, tea.Batch(cmd, c)
@@ -1172,6 +1214,9 @@ func (m Model) updateInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusMessages
 		m.applyFocus()
 		return m, nil
+	case "ctrl+e":
+		m.openEmojiPicker(emojiModeInsert)
+		return m, nil
 	case "ctrl+o":
 		return m.openFilePicker()
 	case "o":
@@ -1191,7 +1236,10 @@ func (m Model) selectChatAtCursor() (tea.Model, tea.Cmd) {
 	}
 	id := m.chats[m.chatCursor].ID
 	m.selectedID = id
+	m.messages = nil
 	m.loadingMsgs = true
+	m.msgVP.SetYOffset(0)
+	m.msgVP.SetContent(m.theme.muted.Render("Cargando mensajes…"))
 	m.focus = focusInput
 	m.applyFocus()
 	_ = m.store.ClearUnread(context.Background(), id)
@@ -1232,9 +1280,10 @@ func (m *Model) applyFocus() {
 func (m *Model) relayout() {
 	sidebarW, contentW, bodyH := m.layoutSizes()
 	_ = sidebarW
-	m.msgVP.Width = max(20, contentW-2)
-	m.msgVP.Height = max(3, bodyH-3)
-	m.input.Width = max(10, contentW-6)
+	// contentW includes border; padding(0,1) + border eat 4 cols; head/sep/input eat rows.
+	m.msgVP.Width = max(20, contentW-4)
+	m.msgVP.Height = max(3, bodyH-5)
+	m.input.Width = max(10, contentW-8)
 	m.refreshViewport(false)
 }
 
@@ -1250,14 +1299,23 @@ func (m *Model) layoutSizes() (sidebarW, contentW, bodyH int) {
 	return
 }
 
-func (m *Model) ensureSidebarVisible() {
+func (m *Model) sidebarVisibleChats() int {
 	_, _, bodyH := m.layoutSizes()
-	vis := max(1, bodyH-4)
+	// Inside bordered box: header rows + chat rows must fit in bodyH.
+	avail := max(1, bodyH-2 /*borders*/ -sidebarHeaderRows)
+	return max(1, avail/sidebarChatRows)
+}
+
+func (m *Model) ensureSidebarVisible() {
+	vis := m.sidebarVisibleChats()
 	if m.chatCursor < m.sidebarOff {
 		m.sidebarOff = m.chatCursor
 	}
 	if m.chatCursor >= m.sidebarOff+vis {
 		m.sidebarOff = m.chatCursor - vis + 1
+	}
+	if m.sidebarOff < 0 {
+		m.sidebarOff = 0
 	}
 }
 
@@ -1265,6 +1323,10 @@ func (m *Model) refreshViewport(stickBottom bool) {
 	atBottom := m.msgVP.AtBottom()
 	m.msgVP.SetContent(m.renderMessages())
 	if stickBottom || atBottom {
+		m.msgVP.GotoBottom()
+	}
+	// Clamp if content shrank (deleted stubs / chat switch).
+	if m.msgVP.PastBottom() {
 		m.msgVP.GotoBottom()
 	}
 }
@@ -1281,6 +1343,9 @@ func (m Model) View() string {
 	}
 	if m.modal == modalError {
 		return m.viewErrorModal()
+	}
+	if m.pickingEmoji {
+		return m.viewEmojiPicker()
 	}
 	if m.addingContact {
 		return m.viewAddContact()
@@ -1309,8 +1374,10 @@ func (m Model) viewHelpModal() string {
   /  o  Ctrl+F        Buscar chats, mensajes y contactos
   a                   Agregar contacto nuevo (teléfono + verificar WA)
   x                   Eliminar chat local (sidebar)
+  Ctrl+E              Panel emoji / GIF (insertar en el input)
+  r                   Reaccionar al mensaje seleccionado ([ ])
   Ctrl+O              Adjuntar archivo
-  [ / ]               Adjunto anterior / siguiente
+  [ / ]               Mensaje/adjunto anterior / siguiente
   o / d               Abrir / descargar media
   v                   Nota de voz (v otra vez = enviar · Esc cancelar)
   t                   Ciclar tema
@@ -1325,6 +1392,8 @@ Llamadas: fondo amarillo = entrante · rojo claro = perdida/rechazada
 Ticks: ✓ enviado · ✓✓ entregado · ✓✓ azul = leído (si el otro tiene
 confirmación de lectura activada en WhatsApp).
 Notificaciones de escritorio + sonido al llegar un mensaje en otro chat.
+Emoji: Ctrl+E inserta; Tab → GIF elige un .gif del disco.
+Reacciones: posicioná con [ ] y pulsá r.
 
 Mouse: click en chat, scroll en lista/mensajes, click en input.`
 	box := m.theme.box.Width(max(48, min(m.width-4, 72)))
@@ -1431,7 +1500,7 @@ func (m Model) viewMain() string {
 	sidebar := m.viewSidebar(sidebarW, bodyH)
 	content := m.viewContent(contentW, bodyH)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", content)
-	help := m.theme.help.Render("? ayuda · 1-4 filtro · e archivar · [ ] media · v voz · / buscar · q salir")
+	help := m.theme.help.Render("? ayuda · Ctrl+E emoji · r reaccionar · e archivar · [ ] msg · v voz · / buscar · q salir")
 	footer := help
 	if m.uploadNote != "" {
 		footer = m.theme.statusWait.Render(m.uploadNote) + "  " + footer
@@ -1465,8 +1534,9 @@ func (m Model) viewSidebar(width, height int) string {
 	}
 	b.WriteString(m.theme.header.Render(title))
 	b.WriteString("\n")
-	vis := max(1, height-4)
+	vis := m.sidebarVisibleChats()
 	end := min(len(m.chats), m.sidebarOff+vis)
+	innerW := max(8, width-2) // account for border when truncating
 	for i := m.sidebarOff; i < end; i++ {
 		c := m.chats[i]
 		name := c.Name
@@ -1477,16 +1547,21 @@ func (m Model) viewSidebar(width, height int) string {
 		if c.IsPinned {
 			mark = "★"
 		}
-		line := fmt.Sprintf("%s%s", mark, truncate(name, width-6))
+		line := fmt.Sprintf("%s%s", mark, truncate(name, innerW-6))
 		if c.UnreadCount > 0 {
 			line += fmt.Sprintf(" (%d)", c.UnreadCount)
 		}
-		preview := truncate(c.LastMessage, width-4)
+		line = truncate(line, innerW-2)
+		last := c.LastMessage
+		if last == "Unsupported message" {
+			last = ""
+		}
+		preview := truncate(last, innerW-4)
 		block := line + "\n " + m.theme.muted.Render(preview)
 		if i == m.chatCursor {
-			b.WriteString(m.theme.sidebarSel.Width(width).Render(block))
+			b.WriteString(m.theme.sidebarSel.Width(innerW).MaxHeight(sidebarChatRows).Render(block))
 		} else {
-			b.WriteString(m.theme.sidebar.Width(width).Render(block))
+			b.WriteString(m.theme.sidebar.Width(innerW).MaxHeight(sidebarChatRows).Render(block))
 		}
 		b.WriteString("\n")
 	}
@@ -1564,6 +1639,9 @@ func (m Model) renderMessages() string {
 			text = mediaLine(msg)
 		case isMediaType(msg.Type) || looksLikeMediaText(msg.Text):
 			text = msg.Text + "  [o recuperar]"
+		}
+		if rx := store.FormatReactions(msg.MetadataJSON); rx != "" {
+			text = text + "  " + rx
 		}
 		cursor := "  "
 		if i == m.mediaCursor {
@@ -1702,14 +1780,16 @@ func renderQR(code string) string {
 
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	r := []rune(s)
-	if n <= 0 || len(r) <= n {
+	if n <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= n {
 		return s
 	}
 	if n <= 1 {
 		return "…"
 	}
-	return string(r[:n-1]) + "…"
+	return ansi.Truncate(s, n, "…")
 }
 
 func max(a, b int) int {

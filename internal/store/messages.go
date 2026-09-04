@@ -23,6 +23,8 @@ SELECT id, chat_id, sender, timestamp, text, type, status, quoted_message_id,
        media_id, is_from_me, is_deleted, metadata_json
 FROM messages
 WHERE chat_id = ? AND timestamp < ?
+  AND type != 'reaction'
+  AND NOT (type = 'other' AND text = 'Unsupported message')
 ORDER BY timestamp DESC
 LIMIT ?`, chatID, beforeTS, limit)
 	} else {
@@ -31,6 +33,8 @@ SELECT id, chat_id, sender, timestamp, text, type, status, quoted_message_id,
        media_id, is_from_me, is_deleted, metadata_json
 FROM messages
 WHERE chat_id = ?
+  AND type != 'reaction'
+  AND NOT (type = 'other' AND text = 'Unsupported message')
 ORDER BY timestamp DESC
 LIMIT ?`, chatID, limit)
 	}

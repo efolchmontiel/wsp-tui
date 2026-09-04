@@ -8,6 +8,25 @@ Motor: [whatsmeow](https://github.com/tulir/whatsmeow) · UI: [Bubble Tea](https
 
 Repo: [github.com/efolchmontiel/wsp-tui](https://github.com/efolchmontiel/wsp-tui)
 
+![wsp-tui en acción](docs/screenshot.png)
+
+## Características
+
+- Chats 1:1 y grupos, con filtros: **Todos / Favoritos / Grupos / Novedades (comunidades) / Archivados**
+- Envío de texto, emojis (`Ctrl+E`), GIF (archivo `.gif`), adjuntos (`Ctrl+O`) y **notas de voz**
+- **Reacciones** a mensajes (`r` + emoji; se muestran junto al texto)
+- Ticks de estado: enviado / entregado / leído (azul)
+- Mensajes temporales (Off → 24h → 7d → 90d) en 1:1 y grupos
+- Archivar, favoritos (pin), búsqueda de chats/mensajes/contactos
+- Agregar contacto por teléfono y verificar WhatsApp
+- Media: abrir / descargar / recuperar; imágenes chicas se bajan solas
+- Llamadas: banner entrante (amarillo) o perdida (rojo) — no se contestan desde la TUI
+- Notificaciones de escritorio + sonido (Linux/`notify-send`)
+- Retención local configurable (`week` / `month` / `3months` / `year` / `never`)
+- Temas y pronombre Él/Ella para etiquetas del chat
+- Sesión Multi-Device por QR o código de pairing
+- Linux, Arch y Windows
+
 ## Quick path
 
 1. Instalá dependencias (abajo, según tu OS).
@@ -99,6 +118,8 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 | Tecla | Acción |
 |-------|--------|
 | `1`–`5` | Todos / Favoritos / Grupos / Novedades / Archivados |
+| `Ctrl+E` | Panel **emoji / GIF** (insertar en el input) |
+| `r` | **Reaccionar** al mensaje seleccionado (`[` / `]`) |
 | `e` | Archivar / desarchivar |
 | `f` / `*` | Favorito |
 | `m` | Mensajes temporales (Off → 24h → 7d → 90d) |
@@ -106,13 +127,19 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 | `/` o `Ctrl+F` | Buscar |
 | `x` | Borrar chat **local** |
 | `Ctrl+O` | Adjuntar archivo |
-| `[` / `]` | Adjunto anterior / siguiente |
+| `[` / `]` | Mensaje / adjunto anterior / siguiente |
 | `o` / `d` | Abrir / descargar media |
 | `v` | Nota de voz |
 | `t` | Tema |
 | `g` | Pronombre Él/Ella |
 | `?` | Ayuda |
 | `q` | Salir |
+
+### Emoji, reacciones y GIF
+
+1. **Enviar emoji:** en el input, `Ctrl+E` → elegí con flechas → `Enter` inserta → `Enter` otra vez envía.
+2. **GIF:** `Ctrl+E` → `Tab` hasta **GIF** → `Enter` → elegí un `.gif` del disco.
+3. **Reaccionar:** con `[` / `]` apuntá el mensaje → `r` → elegí emoji → `Enter`. `Backspace` en el panel quita tu reacción.
 
 Llamadas: banner amarillo = entrante · rojo claro = perdida (no se contestan desde la TUI).
 
@@ -160,6 +187,7 @@ Ahí viven `session.db`, `whatstui.db` y `media/`.
 | Sin audio en Linux | `ffmpeg` + Pulse/PipeWire |
 | Sin audio en Windows | `ffmpeg` con WASAPI en PATH |
 | “client outdated” | Actualizá `go.mau.fi/whatsmeow` |
+| Panel en negro / scroll raro | Actualizá a ≥ 0.6.2 (truncate ANSI + filas del sidebar) |
 
 ## Licencia
 

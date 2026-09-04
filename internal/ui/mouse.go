@@ -49,10 +49,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if x < sidebarW {
 		m.focus = focusSidebar
 		m.applyFocus()
-		// filter bar + title occupy the first two rows inside the sidebar
-		row := y - bodyY0 - 2
-		if row >= 0 {
-			idx := m.sidebarOff + row
+		// top border + filter + title, then 2 rows per chat
+		innerY := y - bodyY0 - 1 /*border*/ - sidebarHeaderRows
+		if innerY >= 0 {
+			idx := m.sidebarOff + innerY/sidebarChatRows
 			if idx >= 0 && idx < len(m.chats) {
 				m.chatCursor = idx
 				return m.selectChatAtCursor()

@@ -217,6 +217,9 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 			s.logger.Debug("parse history msg", "err", err)
 			continue
 		}
+		if s.tryHandleReaction(ctx, parsed) {
+			continue
+		}
 		sm, err := s.storeParsed(ctx, parsed)
 		if err != nil {
 			s.logger.Debug("store history msg", "err", err)
@@ -254,6 +257,9 @@ func (s *Syncer) persistConversation(ctx context.Context, conv *waHistorySync.Co
 
 func (s *Syncer) handleMessage(ctx context.Context, evt *events.Message) {
 	if evt == nil {
+		return
+	}
+	if s.tryHandleReaction(ctx, evt) {
 		return
 	}
 	sm, err := s.storeParsed(ctx, evt)
@@ -318,6 +324,65 @@ func (s *Syncer) handleReceipt(ctx context.Context, evt *events.Receipt) {
 		MessageIDs: ids,
 		Status:     status,
 	})
+}
+
+// tryHandleReaction applies an emoji reaction onto its target message.
+// Returns true when the event was a reaction (handled or skipped).
+func (s *Syncer) tryHandleReaction(ctx context.Context, evt *events.Message) bool {
+	targetID, emoji, ok := s.resolveReaction(ctx, evt)
+	if !ok {
+		return false
+	}
+	chatID := evt.Info.Chat.String()
+	sender := evt.Info.Sender.String()
+	// Drop the reaction stub if an older build stored it as "Unsupported message".
+	_ = s.store.DeleteMessage(ctx, chatID, string(evt.Info.ID))
+
+	updated, applied, err := s.store.ApplyReaction(ctx, chatID, targetID, sender, emoji)
+	if err != nil {
+		s.logger.Warn("apply reaction", "err", err, "target", targetID)
+		return true
+	}
+	if applied {
+		cp := updated
+		s.bus.Publish(app.Event{
+			Kind:       app.EventMessageUpserted,
+			Msg:        &cp,
+			ChatID:     chatID,
+			IsReaction: true,
+		})
+	}
+	return true
+}
+
+func (s *Syncer) resolveReaction(ctx context.Context, evt *events.Message) (targetID, emoji string, ok bool) {
+	if evt == nil || evt.Message == nil {
+		return "", "", false
+	}
+	if r := evt.Message.GetReactionMessage(); r != nil {
+		key := r.GetKey()
+		if key == nil || key.GetID() == "" {
+			return "", "", false
+		}
+		return key.GetID(), r.GetText(), true
+	}
+	if evt.Message.GetEncReactionMessage() == nil {
+		return "", "", false
+	}
+	client := s.clientOrNil()
+	if client == nil {
+		return "", "", false
+	}
+	dec, err := client.DecryptReaction(ctx, evt)
+	if err != nil || dec == nil {
+		s.logger.Debug("decrypt reaction", "err", err)
+		return "", "", false
+	}
+	key := dec.GetKey()
+	if key == nil || key.GetID() == "" {
+		return "", "", false
+	}
+	return key.GetID(), dec.GetText(), true
 }
 
 func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Message, error) {

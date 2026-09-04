@@ -115,6 +115,9 @@ INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '1');
 	_, _ = s.db.ExecContext(ctx, `ALTER TABLE chat_settings ADD COLUMN pronoun TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.ExecContext(ctx, `ALTER TABLE chats ADD COLUMN is_community INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.ExecContext(ctx, `ALTER TABLE chat_settings ADD COLUMN ephemeral_seconds INTEGER NOT NULL DEFAULT 0`)
+	// Hide legacy reaction stubs that older builds stored as unsupported rows.
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM messages WHERE type = 'other' AND text = 'Unsupported message' AND (media_id IS NULL OR media_id = '')`)
+	_, _ = s.db.ExecContext(ctx, `UPDATE chats SET last_message = '' WHERE last_message = 'Unsupported message'`)
 	if err := s.ensureFTS(ctx); err != nil {
 		return err
 	}

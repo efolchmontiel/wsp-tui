@@ -39,7 +39,8 @@ type Event struct {
 	SyncNote   string
 	MediaID    string
 	LocalPath  string
-	Progress   int // 0-100 for uploads
+	Progress   int  // 0-100 for uploads
+	IsReaction bool // reaction applied to an existing message — no unread/preview/notify
 }
 
 // EventKind classifies engine → UI messages.

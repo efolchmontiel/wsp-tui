@@ -15,21 +15,24 @@ func TestExtractTextConversation(t *testing.T) {
 	}
 }
 
-func TestClassifyTypeCallMissed(t *testing.T) {
+func TestClassifyTypeReaction(t *testing.T) {
 	msg := &waE2E.Message{
-		CallLogMesssage: &waE2E.CallLogMessage{
-			IsVideo:     proto.Bool(true),
-			CallOutcome: waE2E.CallLogMessage_MISSED.Enum(),
+		ReactionMessage: &waE2E.ReactionMessage{
+			Text: proto.String("😂"),
 		},
 	}
 	typ, preview := ClassifyType(msg)
-	if typ != store.TypeCallMissed {
+	if typ != store.TypeReaction {
 		t.Fatalf("type %s", typ)
 	}
-	if preview != "Llamada perdida · video" {
+	if preview != "😂" {
 		t.Fatalf("preview %q", preview)
 	}
+	if !IsReaction(msg) {
+		t.Fatal("expected IsReaction")
+	}
 }
+
 
 
 func TestPreview(t *testing.T) {

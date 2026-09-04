@@ -215,7 +215,10 @@ func searchCmd(st *store.Store, eng *engine.Engine, gen int, query string) tea.C
 
 func (m Model) openChatID(chatID, name string) (tea.Model, tea.Cmd) {
 	m.selectedID = chatID
+	m.messages = nil
 	m.loadingMsgs = true
+	m.msgVP.SetYOffset(0)
+	m.msgVP.SetContent(m.theme.muted.Render("Cargando mensajes…"))
 	m.focus = focusInput
 	m.applyFocus()
 	_ = m.store.ClearUnread(context.Background(), chatID)

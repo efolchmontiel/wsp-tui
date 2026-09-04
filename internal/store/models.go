@@ -62,5 +62,6 @@ const (
 	TypeSticker      = "sticker"
 	TypeCallIncoming = "call_incoming"
 	TypeCallMissed   = "call_missed"
+	TypeReaction     = "reaction"
 	TypeOther        = "other"
 )

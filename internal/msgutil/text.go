@@ -53,7 +53,10 @@ func ExtractText(msg *waE2E.Message) string {
 	if msg.GetLocationMessage() != nil || msg.GetLiveLocationMessage() != nil {
 		return "ubicación"
 	}
-	if msg.GetReactionMessage() != nil {
+	if r := msg.GetReactionMessage(); r != nil {
+		return r.GetText()
+	}
+	if msg.GetEncReactionMessage() != nil {
 		return ""
 	}
 	if cl := msg.GetCallLogMesssage(); cl != nil {
@@ -93,6 +96,13 @@ func ClassifyType(msg *waE2E.Message) (msgType, preview string) {
 			return store.TypeOther, text
 		}
 	}
+	if msg.GetReactionMessage() != nil || msg.GetEncReactionMessage() != nil {
+		emoji := ExtractText(msg)
+		if emoji == "" {
+			return store.TypeReaction, "reacción"
+		}
+		return store.TypeReaction, emoji
+	}
 	text := ExtractText(msg)
 	switch {
 	case msg.GetConversation() != "" || msg.GetExtendedTextMessage() != nil:
@@ -113,6 +123,11 @@ func ClassifyType(msg *waE2E.Message) (msgType, preview string) {
 		}
 		return store.TypeOther, text
 	}
+}
+
+// IsReaction reports whether the proto is an emoji reaction (plain or encrypted).
+func IsReaction(msg *waE2E.Message) bool {
+	return msg != nil && (msg.GetReactionMessage() != nil || msg.GetEncReactionMessage() != nil)
 }
 
 // Preview truncates sidebar preview text.
