@@ -228,7 +228,7 @@ Ahí viven `session.db`, `whatstui.db` y `media/`.
 | Sin audio en Linux | `ffmpeg` + Pulse/PipeWire |
 | Sin audio en Windows | `ffmpeg` con WASAPI en PATH |
 | “client outdated” | Actualiza `go.mau.fi/whatsmeow` |
-| Panel en negro / scroll raro | Actualizá a ≥ 0.6.2 (truncate ANSI + filas del sidebar) |
+| Panel en negro / scroll raro | Actualiza a ≥ 0.6.2 (truncate ANSI + filas del sidebar) |
 
 ## Licencia
 
