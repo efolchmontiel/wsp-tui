@@ -12,14 +12,14 @@ Repo: [github.com/efolchmontiel/wsp-tui](https://github.com/efolchmontiel/wsp-tu
 
 ## Características
 
-- Chats 1:1 y grupos, con filtros: **Todos / Favoritos / Grupos / Novedades (comunidades) / Archivados**
+- Chats 1:1 y grupos, con filtros configurables (`C`): por defecto **Todos / Favoritos / Grupos / Archivados** (Estados y Novedades opcionales)
 - Envío de **texto**, **emojis** (`Ctrl+E`) y **reacciones** (`[` / `]` + `r`)
-- **GIF**: recibir (preview animado) y enviar — búsqueda **Giphy** (`Ctrl+G` para la API key opcional) o archivo `.gif` local
+- **GIF**: preview mosaic en TUI; `o` abre a resolución real; búsqueda **Giphy** (`Ctrl+G` para la API key) o archivo `.gif` local
 - Adjuntos (`Ctrl+O`), **notas de voz** (`v`), abrir/descargar media (`o` / `d`)
-- **Previews inline** de imagen/GIF y **link embeds** (YouTube, etc.) vía Kitty / iTerm2 / Sixel / halfblocks
+- **Previews inline** de imagen/GIF (mosaic halfblocks) y **link embeds**
 - Ticks de estado: enviado / entregado / leído (azul)
 - Mensajes temporales (Off → 24h → 7d → 90d) en 1:1 y grupos
-- Archivar, favoritos (pin), búsqueda de chats/mensajes/contactos
+- Archivar (`e`): sin notificaciones ni auto-descarga de media; favoritos (pin); búsqueda
 - Agregar contacto por teléfono y verificar WhatsApp
 - Llamadas: banner entrante (amarillo) o perdida (rojo) — no se contestan desde la TUI
 - Notificaciones de escritorio + sonido (Linux/`notify-send`)
@@ -30,10 +30,10 @@ Repo: [github.com/efolchmontiel/wsp-tui](https://github.com/efolchmontiel/wsp-tu
 
 ## Quick path
 
-1. Instalá dependencias (abajo, según tu OS).
+1. Instala dependencias (abajo, según tu OS).
 2. `git clone https://github.com/efolchmontiel/wsp-tui.git && cd wsp-tui`
 3. `make install` (o `go build -o wsp-tui ./cmd/whatstui`)
-4. Corré `wsp-tui` · escaneá el QR · listo.
+4. Ejecuta `wsp-tui` · escanea el QR · listo.
 
 ## Requisitos
 
@@ -70,7 +70,7 @@ wsp-tui
 
 ### Windows
 
-1. Instalá [Go](https://go.dev/dl/) y [ffmpeg](https://ffmpeg.org/download.html) (en PATH).
+1. Instala [Go](https://go.dev/dl/) y [ffmpeg](https://ffmpeg.org/download.html) (en PATH).
 2. Abre **Windows Terminal** o PowerShell:
 
 ```powershell
@@ -80,7 +80,7 @@ go build -o wsp-tui.exe ./cmd/whatstui
 .\wsp-tui.exe
 ```
 
-Opcional: copiá `wsp-tui.exe` a una carpeta en tu PATH.
+Opcional: copia `wsp-tui.exe` a una carpeta en tu PATH.
 
 ## Primer inicio — escanear el QR
 
@@ -90,8 +90,8 @@ wsp-tui
 
 1. Si no hay sesión, aparece un **QR en la terminal**.
 2. En el teléfono: **WhatsApp → Dispositivos vinculados → Vincular un dispositivo**.
-3. Escaneá el QR.
-4. Estado: **● Connected**.
+3. Escanea el QR.
+4. Estado: **● Conectado**.
 
 En el próximo arranque reutiliza la sesión local (sin pedir QR otra vez).
 
@@ -119,12 +119,13 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 
 | Tecla | Acción |
 |-------|--------|
-| `1`–`5` | Todos / Favoritos / Grupos / Novedades / Archivados |
+| `1`–`N` | Filtros **visibles** (orden de la barra) |
+| `C` | Configurar menú de filtros (mostrar/ocultar pestañas) |
 | `R` | Modal de **retención local** (presets con `*` + personalizado N semana/mes/año) |
 | `Ctrl+G` | **Giphy API key**: pegar / validar / guardar (o borrar) |
 | `Ctrl+E` | Panel **emoji / GIF** (insertar en el input) |
 | `r` | **Reaccionar** al mensaje seleccionado (`[` / `]`) |
-| `e` | Archivar / desarchivar |
+| `e` | Archivar / desarchivar (sin notificaciones ni auto-descarga) |
 | `f` / `*` | Favorito |
 | `m` | Mensajes temporales (Off → 24h → 7d → 90d) |
 | `a` | Agregar contacto (teléfono) |
@@ -132,12 +133,16 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 | `x` | Borrar chat **local** |
 | `Ctrl+O` | Adjuntar archivo |
 | `[` / `]` | **Seleccionar mensaje** (texto o media) para reaccionar / abrir |
-| `o` / `d` | Abrir / descargar media del mensaje seleccionado |
+| `o` / `d` | Abrir / descargar media (también GIF del picker) |
 | `v` | Nota de voz |
 | `t` | Tema |
 | `g` | Pronombre Él/Ella |
 | `?` | Ayuda |
 | `q` | Salir |
+
+### Menú de filtros (`C`)
+
+Por defecto: **Todos / Favoritos / Grupos / Archivados**. Estados y Novedades quedan desactivados hasta que los actives con `C` (checklist `[x]` / `[ ]`, Enter guarda en `config.toml`).
 
 ### Emoji, reacciones y GIF
 
@@ -147,7 +152,7 @@ Aliases tras `make install`: `wstui`, `whatstui`.
    - Incorrecta → error claro, **no** se guarda.
    - Vacío + Enter → borra la key (solo archivos `.gif` locales). `Ctrl+U` limpia el campo.
 3. **GIF:** `Ctrl+E` → `Tab` hasta **GIF**.
-   - Con key válida: escribí, `Enter` busca, ↑↓ elige, `Enter` envía. `f` = archivo local.
+   - Con key válida: escribe, `Enter` busca, ↑↓ elige, `o` abre preview real, `Enter` envía. `f` = archivo local.
    - Sin key: `Enter` abre el selector de `.gif` del disco.
 4. **Reaccionar:** `[` / `]` apunta **cualquier** mensaje (también texto) → `r` → emoji → `Enter`. `Backspace` en el panel quita tu reacción.
 
@@ -178,6 +183,14 @@ preview_protocol = "auto"
 # Opcional — https://developers.giphy.com/dashboard/
 # Vacío = solo archivos .gif locales
 giphy_api_key = ""
+
+# Pestañas del menú lateral (true = visible)
+filter_all = true
+filter_favorites = true
+filter_groups = true
+filter_estados = false
+filter_novedades = false
+filter_archived = true
 ```
 
 | Valor retención | Significado |
@@ -211,10 +224,10 @@ Ahí viven `session.db`, `whatstui.db` y `media/`.
 | Problema | Qué hacer |
 |----------|-----------|
 | QR no se ve | Terminal UTF-8 / fuente mono; prueba `--debug` y el log |
-| Sesión rota | `wsp-tui --logout` o `--reset` y volvé a vincular |
+| Sesión rota | `wsp-tui --logout` o `--reset` y vuelve a vincular |
 | Sin audio en Linux | `ffmpeg` + Pulse/PipeWire |
 | Sin audio en Windows | `ffmpeg` con WASAPI en PATH |
-| “client outdated” | Actualizá `go.mau.fi/whatsmeow` |
+| “client outdated” | Actualiza `go.mau.fi/whatsmeow` |
 | Panel en negro / scroll raro | Actualizá a ≥ 0.6.2 (truncate ANSI + filas del sidebar) |
 
 ## Licencia

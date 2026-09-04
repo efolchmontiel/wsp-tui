@@ -557,7 +557,9 @@ func (s *Syncer) storeParsed(ctx context.Context, evt *events.Message) (store.Me
 			DownloadState: store.MediaPending,
 		})
 		if ref.Kind == "image" && ref.FileLength > 0 && ref.FileLength <= media.SmallImageAutoBytes && s.media != nil {
-			go s.autoDownload(sm.MediaID, ref)
+			if !s.store.IsChatArchivedLoose(ctx, sm.ChatID) {
+				go s.autoDownload(sm.MediaID, ref)
+			}
 		}
 	}
 	return sm, nil

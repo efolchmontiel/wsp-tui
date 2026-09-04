@@ -30,6 +30,14 @@ preview_protocol = "auto"
 gif_provider = "auto"
 # Optional — https://developers.giphy.com/dashboard/
 giphy_api_key = ""
+
+# Sidebar tabs (true = visible). Defaults hide Estados / Novedades.
+filter_all = true
+filter_favorites = true
+filter_groups = true
+filter_estados = false
+filter_novedades = false
+filter_archived = true
 `
 
 type RetentionPeriod string
@@ -86,6 +94,35 @@ type Config struct {
 	PreviewProtocol   PreviewProtocol
 	GIFProvider       GIFProvider
 	GiphyAPIKey       string
+	Filters           FilterVisibility
+}
+
+// FilterVisibility controls which sidebar tabs appear.
+type FilterVisibility struct {
+	All        bool
+	Favorites  bool
+	Groups     bool
+	Estados    bool
+	Novedades  bool
+	Archived   bool
+}
+
+func DefaultFilterVisibility() FilterVisibility {
+	return FilterVisibility{
+		All:       true,
+		Favorites: true,
+		Groups:    true,
+		Estados:   false,
+		Novedades: false,
+		Archived:  true,
+	}
+}
+
+func (f FilterVisibility) Normalize() FilterVisibility {
+	if !f.All && !f.Favorites && !f.Groups && !f.Estados && !f.Novedades && !f.Archived {
+		f.All = true
+	}
+	return f
 }
 
 func Default() Config {
@@ -97,6 +134,7 @@ func Default() Config {
 		PreviewProtocol:   PreviewAuto,
 		GIFProvider:       GIFProviderAuto,
 		GiphyAPIKey:       "",
+		Filters:           DefaultFilterVisibility(),
 	}
 }
 
@@ -362,11 +400,36 @@ func Load(path string) (Config, error) {
 			cfg.GIFProvider = ParseGIFProvider(val)
 		case "giphy_api_key", "giphy_key":
 			cfg.GiphyAPIKey = val
+		case "filter_all":
+			if b, err := strconv.ParseBool(val); err == nil {
+				cfg.Filters.All = b
+			}
+		case "filter_favorites", "filter_fav":
+			if b, err := strconv.ParseBool(val); err == nil {
+				cfg.Filters.Favorites = b
+			}
+		case "filter_groups":
+			if b, err := strconv.ParseBool(val); err == nil {
+				cfg.Filters.Groups = b
+			}
+		case "filter_estados", "filter_status":
+			if b, err := strconv.ParseBool(val); err == nil {
+				cfg.Filters.Estados = b
+			}
+		case "filter_novedades", "filter_communities":
+			if b, err := strconv.ParseBool(val); err == nil {
+				cfg.Filters.Novedades = b
+			}
+		case "filter_archived", "filter_arch":
+			if b, err := strconv.ParseBool(val); err == nil {
+				cfg.Filters.Archived = b
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return cfg, err
 	}
+	cfg.Filters = cfg.Filters.Normalize()
 	return cfg, nil
 }
 
@@ -377,6 +440,7 @@ func Save(path string, cfg Config) error {
 	cfg.LocalRetention = ParseRetention(string(cfg.LocalRetention))
 	cfg.PreviewProtocol = ParsePreviewProtocol(string(cfg.PreviewProtocol))
 	cfg.GIFProvider = ParseGIFProvider(string(cfg.GIFProvider))
+	cfg.Filters = cfg.Filters.Normalize()
 	body := fmt.Sprintf(
 		`# wsp-tui — WhatsApp en la terminal
 # https://github.com/efolchmontiel/wsp-tui
@@ -397,10 +461,20 @@ preview_protocol = %q
 gif_provider = %q
 # Optional — https://developers.giphy.com/dashboard/
 giphy_api_key = %q
+
+# Sidebar tabs (true = visible). Defaults hide Estados / Novedades.
+filter_all = %v
+filter_favorites = %v
+filter_groups = %v
+filter_estados = %v
+filter_novedades = %v
+filter_archived = %v
 `,
 		cfg.Theme, cfg.Mouse, string(cfg.LocalRetention),
 		cfg.ShowMediaPreviews, string(cfg.PreviewProtocol),
 		string(cfg.GIFProvider), cfg.GiphyAPIKey,
+		cfg.Filters.All, cfg.Filters.Favorites, cfg.Filters.Groups,
+		cfg.Filters.Estados, cfg.Filters.Novedades, cfg.Filters.Archived,
 	)
 	return os.WriteFile(path, []byte(body), 0o600)
 }

@@ -56,8 +56,7 @@ var (
 	gifCache = map[string]*gif.GIF{}
 )
 
-// TUIProtocol picks the best in-TUI protocol. Kitty (Unicode placeholders) matches
-// Concord-quality on Kitty/Ghostty/WezTerm; otherwise mosaic half/quarter blocks.
+// TUIProtocol picks Kitty when supported, else mosaic.
 func TUIProtocol(cfg config.PreviewProtocol) termimg.Protocol {
 	switch config.ParsePreviewProtocol(string(cfg)) {
 	case config.PreviewHalfblocks:
@@ -145,7 +144,7 @@ func RenderGIFFrame(path string, width, height, frame int, proto termimg.Protoco
 	if len(g.Image) == 0 {
 		return "", fmt.Errorf("gif vacío")
 	}
-	// Native graphics: still frame only (animating Kitty every tick breaks the TUI).
+	// Native graphics: still frame only.
 	if IsNative(proto) {
 		frame = 0
 	}
@@ -210,9 +209,7 @@ func renderImage(img image.Image, width, height int, proto termimg.Protocol) (st
 	return out, nil
 }
 
-// hasVisibleCells is true when s has glyphs after stripping terminal escapes.
-// APC-only Kitty/Sixel payloads look non-empty to TrimSpace but paint blank
-// inside Bubble Tea's alt-screen.
+// hasVisibleCells reports printable glyphs after stripping escapes.
 func hasVisibleCells(s string) bool {
 	inEsc := false
 	for _, r := range s {

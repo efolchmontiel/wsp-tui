@@ -47,6 +47,7 @@ const (
 	modalConfirmDelete
 	modalRetention
 	modalGiphyKey
+	modalFilterMenu
 )
 
 type Model struct {
@@ -136,6 +137,9 @@ type Model struct {
 	giphyKeyInput  textinput.Model
 	giphyKeyStatus string
 	giphyKeyBusy   bool
+
+	filterDraft      config.FilterVisibility
+	filterMenuCursor int
 }
 
 type (
@@ -230,6 +234,7 @@ func New(bus *app.Bus, eng *engine.Engine, st *store.Store, hasSession bool, cfg
 	if cfg.Theme == "" {
 		cfg.Theme = "dark"
 	}
+	cfg.Filters = cfg.Filters.Normalize()
 
 	return Model{
 		theme:         themeByName(cfg.Theme),
@@ -239,7 +244,7 @@ func New(bus *app.Bus, eng *engine.Engine, st *store.Store, hasSession bool, cfg
 		eng:           eng,
 		store:         st,
 		state:         app.StateStarting,
-		status:        "Starting…",
+		status:        "Iniciando…",
 		showLogin:     !hasSession,
 		phoneInput:    phone,
 		input:         ti,
@@ -253,6 +258,7 @@ func New(bus *app.Bus, eng *engine.Engine, st *store.Store, hasSession bool, cfg
 		msgCursor:     -1,
 		retAmount:     newRetentionAmountInput(),
 		retUnit:       config.UnitMonth,
+		chatFilter:    visibleChatFilters(cfg.Filters)[0],
 		gifQuery:      newGIFQueryInput(),
 		giphyKeyInput: newGiphyKeyInput(),
 	}
@@ -611,9 +617,8 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 		m.modal = modalError
 	case app.EventInfo:
 		m.setInfo(evt.Message)
-		// Image/doc open publishes "Abierto:" — never AV playback. Clear any
-		// stale wave claim left by older clients or a bad open path.
 		if strings.HasPrefix(evt.Message, "Abierto:") {
+			// Clear stale playback UI after image/doc open.
 			if m.playingMediaID != "" || m.playingMsgID != "" {
 				m.playingMediaID = ""
 				m.playingMsgID = ""
@@ -637,16 +642,18 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 				m.refreshViewport(false)
 			}
 			if !evt.IsReaction && m.desktopNotify && !evt.Msg.IsFromMe && evt.Msg.ChatID != m.selectedID {
-				title := "WhatsTUI"
-				for _, c := range m.chats {
-					if c.ID == evt.Msg.ChatID {
-						if c.Name != "" {
-							title = c.Name
+				if !m.store.IsChatArchivedLoose(context.Background(), evt.Msg.ChatID) {
+					title := "WhatsTUI"
+					for _, c := range m.chats {
+						if c.ID == evt.Msg.ChatID {
+							if c.Name != "" {
+								title = c.Name
+							}
+							break
 						}
-						break
 					}
+					go notify.Desktop(title, evt.Msg.Text)
 				}
-				go notify.Desktop(title, evt.Msg.Text)
 			}
 			if m.pendingOpenChat != "" && evt.Msg.ChatID == m.pendingOpenChat &&
 				evt.Msg.ID == m.pendingOpenMsgID && evt.Msg.MediaID != "" {
@@ -850,33 +857,19 @@ func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus != focusInput || strings.TrimSpace(m.input.Value()) == "" {
 			return m.toggleVoiceNote()
 		}
-	case "1":
+	case "1", "2", "3", "4", "5", "6":
 		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterAll)
-		}
-	case "2":
-		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterFavorites)
-		}
-	case "3":
-		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterGroups)
-		}
-	case "4":
-		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterEstados)
-		}
-	case "5":
-		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterNovedades)
-		}
-	case "6":
-		if m.focus != focusInput {
-			return m.setChatFilter(store.FilterArchived)
+			n := int(msg.String()[0] - '0')
+			return m.setFilterByDigit(n)
 		}
 	case "e":
 		if m.focus != focusInput {
 			return m.toggleArchiveSelected()
+		}
+	case "C":
+		if m.focus != focusInput {
+			m.openFilterMenuModal()
+			return m, nil
 		}
 	case "f", "*":
 		if m.focus != focusInput {
@@ -1015,6 +1008,9 @@ func (m Model) updateModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.modal == modalGiphyKey {
 		return m.updateGiphyKeyModalKeys(msg)
+	}
+	if m.modal == modalFilterMenu {
+		return m.updateFilterMenuModalKeys(msg)
 	}
 	switch msg.String() {
 	case "esc", "enter", "q", "?", "ctrl+c":
@@ -1270,7 +1266,7 @@ func (m Model) cyclePronoun() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateMessageKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle app keys before viewport so "o"/"d" don't move scroll.
+	// App keys before viewport (avoid scroll on o/d).
 	switch msg.String() {
 	case "enter", "i":
 		m.focus = focusInput
@@ -1455,6 +1451,9 @@ func (m Model) View() string {
 	if m.modal == modalRetention {
 		return m.viewRetentionModal()
 	}
+	if m.modal == modalFilterMenu {
+		return m.viewFilterMenuModal()
+	}
 	if m.modal == modalGiphyKey {
 		return m.viewGiphyKeyModal()
 	}
@@ -1484,7 +1483,8 @@ func (m Model) viewHelpModal() string {
 
   Tab / Shift+Tab     Cambiar panel
   Ctrl+H / Ctrl+L     Chats / Input
-  1 2 3 4 5 6         Todos / Favoritos / Grupos / Estados / Novedades / Archivados
+  1…N                 Filtros visibles (orden de la barra)
+  C                   Configurar menú de filtros (mostrar/ocultar pestañas)
   e                   Archivar / desarchivar chat
   f / *               Favorito (pin)
   m                   Mensajes temporales (Off→24h→7d→90d) · 1:1 y grupos
@@ -1505,14 +1505,16 @@ func (m Model) viewHelpModal() string {
   Esc                 Cerrar modal / búsqueda / picker / cancelar voz
   q                   Salir
 
-Estados (4): solo estados de WhatsApp (status@broadcast).
-Novedades (5): comunidades; no aparecen en Todos/Grupos.
-Archivados (6): chats archivados.
+Por defecto el menú muestra Todos / Fav / Grupos / Arch (sin Estados ni Novedades).
+C activa o desactiva pestañas. Las teclas 1…N siguen el orden visible.
+Archivados: sin notificaciones de escritorio ni auto-descarga de media;
+los mensajes se guardan; se puede abrir el chat y usar o/d a mano.
 Llamadas: fondo amarillo = entrante · rojo claro = perdida/rechazada
 (no se pueden contestar desde la TUI).
 Ticks: ✓ enviado · ✓✓ entregado · ✓✓ azul = leído (si el otro tiene
 confirmación de lectura activada en WhatsApp).
-Notificaciones de escritorio + sonido al llegar un mensaje en otro chat.
+Notificaciones de escritorio + sonido al llegar un mensaje en otro chat
+(no archivado).
 Emoji: Ctrl+E inserta; Tab → GIF busca (Giphy) o archivo .gif.
 GIF: Ctrl+G elige proveedor auto/giphy/local y pega/valida la key.
 Reacciones: [ ] elige el mensaje (también texto) y pulsa r.
@@ -1648,7 +1650,7 @@ func (m Model) viewHeader() string {
 
 func (m Model) viewSidebar(width, height int) string {
 	var b strings.Builder
-	b.WriteString(filterBar(m.chatFilter, width, m.theme))
+	b.WriteString(filterBar(m.chatFilter, width, m.theme, m.cfg.Filters))
 	b.WriteString("\n")
 	title := "Chats"
 	if m.focus == focusSidebar {
@@ -1688,7 +1690,7 @@ func (m Model) viewSidebar(width, height int) string {
 		b.WriteString("\n")
 	}
 	if len(m.chats) == 0 {
-		b.WriteString(m.theme.muted.Render("  Sin chats en este filtro.\n  1–5 para cambiar."))
+		b.WriteString(m.theme.muted.Render("  Sin chats en este filtro.\n  1–N o C para menú."))
 	}
 	style := lipgloss.NewStyle().Width(width).Height(height).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("238"))
 	if m.focus == focusSidebar {
@@ -1809,8 +1811,7 @@ func (m Model) renderMsgPreview(msg store.Message, width, height int) string {
 	if path == "" {
 		return ""
 	}
-	// Chat lives in Bubble Tea alt-screen: Kitty/iTerm/Sixel often paint blank
-	// or get wiped by ClearGraphics. Mosaic halfblocks always show in-terminal.
+	// Mosaic halfblocks inside Bubble Tea alt-screen.
 	proto := preview.Halfblocks()
 	var (
 		out string
@@ -1933,19 +1934,19 @@ func statusGlyph(m store.Message, th theme) string {
 func humanStatus(state app.ConnectionState, detail string) string {
 	switch state {
 	case app.StateConnected:
-		return "Connected"
+		return "Conectado"
 	case app.StateReconnecting:
-		return "Reconnecting…"
+		return "Reconectando…"
 	case app.StateConnecting:
-		return "Connecting…"
+		return "Conectando…"
 	case app.StateQR:
-		return "Waiting for QR scan"
+		return "Esperando QR"
 	case app.StatePairingCode:
-		return "Waiting for pairing code"
+		return "Esperando código de emparejamiento"
 	case app.StateNeedsLogin:
-		return "No session"
+		return "Sin sesión"
 	case app.StateLoggedOut:
-		return "Logged out"
+		return "Sesión cerrada"
 	case app.StateError:
 		if detail != "" {
 			return detail

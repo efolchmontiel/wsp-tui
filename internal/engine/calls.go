@@ -15,7 +15,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
-// If CallTerminate never arrives (common on companion devices), flip to missed.
+// If CallTerminate is missing, mark missed after timeout.
 const callMissTimeout = 55 * time.Second
 
 type activeCall struct {
@@ -106,7 +106,9 @@ func (e *Engine) handleCallOffer(evt *events.CallOffer) {
 	e.upsertCallMessage(chatID, msgID, store.TypeCallIncoming,
 		fmt.Sprintf("Llamada entrante · %s", media), evt.Timestamp)
 	e.trackIncomingCall(evt.CallID, chatID, msgID, media)
-	go notify.Desktop("WhatsTUI", fmt.Sprintf("Llamada entrante (%s)", media))
+	if e.store == nil || !e.store.IsChatArchivedLoose(context.Background(), chatID) {
+		go notify.Desktop("WhatsTUI", fmt.Sprintf("Llamada entrante (%s)", media))
+	}
 }
 
 func (e *Engine) handleCallOfferNotice(evt *events.CallOfferNotice) {
@@ -119,7 +121,9 @@ func (e *Engine) handleCallOfferNotice(evt *events.CallOfferNotice) {
 	e.upsertCallMessage(chatID, msgID, store.TypeCallIncoming,
 		fmt.Sprintf("Llamada entrante · %s", media), evt.Timestamp)
 	e.trackIncomingCall(evt.CallID, chatID, msgID, media)
-	go notify.Desktop("WhatsTUI", fmt.Sprintf("Llamada entrante (%s)", media))
+	if e.store == nil || !e.store.IsChatArchivedLoose(context.Background(), chatID) {
+		go notify.Desktop("WhatsTUI", fmt.Sprintf("Llamada entrante (%s)", media))
+	}
 }
 
 func (e *Engine) handleCallTerminate(evt *events.CallTerminate) {
@@ -281,7 +285,7 @@ func (e *Engine) upsertCallMessage(chatID, msgID, typ, text string, ts time.Time
 	}
 	_ = e.store.EnsureChatExists(ctx, chatID, "", isGroup)
 
-	// Keep original timestamp so terminate/timeout don't reorder the timeline.
+	// Keep original timestamp on update.
 	unixTS := ts.Unix()
 	if existing, err := e.store.GetMessage(ctx, chatID, msgID); err == nil && existing.Timestamp > 0 {
 		unixTS = existing.Timestamp

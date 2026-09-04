@@ -295,7 +295,7 @@ func (m Model) viewGIFTab() string {
 			}
 			b.WriteString("\n")
 			pw, ph := m.gifPickerPreviewSize()
-			// Same as chat: Kitty/iTerm blank out inside Bubble Tea; mosaic always shows.
+			// Mosaic halfblocks: reliable inside Bubble Tea.
 			proto := preview.Halfblocks()
 			if m.gifPreviewPath != "" {
 				var (
@@ -511,10 +511,10 @@ func downloadGiphyCmd(gifURL string) tea.Cmd {
 	}
 }
 
-// openSelectedGifExternal opens the full-resolution GIF with the OS viewer (same as chat `o`).
+// openSelectedGifExternal opens the full GIF with the OS viewer.
 func (m Model) openSelectedGifExternal() (tea.Model, tea.Cmd) {
 	if m.gifCursor < 0 || m.gifCursor >= len(m.gifResults) {
-		m.setInfo("Elegí un GIF con ↑↓")
+		m.setInfo("Elige un GIF con ↑↓")
 		return m, nil
 	}
 	sel := m.gifResults[m.gifCursor]
@@ -524,7 +524,7 @@ func (m Model) openSelectedGifExternal() (tea.Model, tea.Cmd) {
 	}
 	local := m.gifPreviewPath
 	if sel.ID != "" && sel.ID == m.gifPreviewID {
-		// keep local as fast fallback while full URL downloads
+		// keep local fallback
 	} else {
 		local = ""
 	}

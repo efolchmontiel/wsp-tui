@@ -91,3 +91,26 @@ func TestSweepStaleIncomingCalls(t *testing.T) {
 		t.Fatalf("fresh should stay incoming: %+v", fresh)
 	}
 }
+
+func TestIsChatArchivedLooseSibling(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "arch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	pn := "549111222333@s.whatsapp.net"
+	lid := "549111222333@lid"
+	_ = s.UpsertChat(ctx, store.Chat{ID: pn, Name: "+54 9 1111 222333"})
+	_ = s.UpsertChat(ctx, store.Chat{ID: lid, Name: "+54 9 1111 222333"})
+	if err := s.SetChatArchived(ctx, pn, true); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsChatArchivedLoose(ctx, lid) {
+		t.Fatal("LID sibling should count as archived")
+	}
+	if s.IsChatArchivedLoose(ctx, "other@s.whatsapp.net") {
+		t.Fatal("unrelated chat")
+	}
+}

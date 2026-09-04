@@ -91,9 +91,7 @@ func (m *Manager) DownloadRefToFile(ctx context.Context, ref DownloadRef, destPa
 	return client.DownloadToFile(ctx, dl, f)
 }
 
-// OpenExternal opens a local file with the platform default viewer.
-// Audio/video use mpv when available; images/docs use the OS opener
-// (xdg-open on Linux, rundll32 on Windows, open on macOS).
+// OpenExternal opens a file with mpv or the OS viewer.
 func OpenExternal(path, kind string) (*exec.Cmd, error) {
 	if path == "" {
 		return nil, fmt.Errorf("no local file")
@@ -104,7 +102,7 @@ func OpenExternal(path, kind string) (*exec.Cmd, error) {
 	switch kind {
 	case "audio", "video":
 		if _, err := exec.LookPath("mpv"); err != nil {
-			return nil, fmt.Errorf("mpv no está instalado — instalalo para reproducir audio/video")
+			return nil, fmt.Errorf("mpv no está instalado — instálalo para reproducir audio/video")
 		}
 		cmd := exec.Command("mpv", "--no-terminal", "--force-window=no", "--", path)
 		if err := cmd.Start(); err != nil {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/efolchmontiel/wsp-tui/internal/config"
 	"github.com/efolchmontiel/wsp-tui/internal/media"
 	"github.com/efolchmontiel/wsp-tui/internal/store"
 )
@@ -51,8 +52,7 @@ func (m Model) openSelectedMedia() (tea.Model, tea.Cmd) {
 	}
 	msg := m.messages[m.msgCursor]
 	if msg.MediaID != "" {
-		// Do NOT mark images/docs as playing — that drew the audio wave and
-		// refreshed the viewport every 120ms (scroll jump + vanishing lines).
+		// Images must not claim A/V playback.
 		if m.playingMediaID == msg.MediaID && isPlayableAV(msg) {
 			m.setInfo("Ya está reproduciendo")
 			return m, nil
@@ -164,11 +164,12 @@ func (m Model) selectedSidebarChatID() string {
 	return m.selectedID
 }
 
-func filterBar(active store.ChatFilter, width int, th theme) string {
-	tabs := []struct {
+func filterBar(active store.ChatFilter, width int, th theme, vis config.FilterVisibility) string {
+	type tab struct {
 		f store.ChatFilter
 		s string
-	}{
+	}
+	all := []tab{
 		{store.FilterAll, "Todos"},
 		{store.FilterFavorites, "Fav"},
 		{store.FilterGroups, "Grupos"},
@@ -176,16 +177,25 @@ func filterBar(active store.ChatFilter, width int, th theme) string {
 		{store.FilterNovedades, "Noved"},
 		{store.FilterArchived, "Arch"},
 	}
-	parts := make([]string, 0, 6)
-	for _, t := range tabs {
+	enabled := visibleChatFilters(vis)
+	allow := map[store.ChatFilter]bool{}
+	for _, f := range enabled {
+		allow[f] = true
+	}
+	parts := make([]string, 0, len(enabled))
+	for _, t := range all {
+		if !allow[t.f] {
+			continue
+		}
 		if t.f == active {
 			parts = append(parts, th.accent.Bold(true).Render("["+t.s+"]"))
 		} else {
 			parts = append(parts, th.muted.Render(t.s))
 		}
 	}
+	hint := fmt.Sprintf(" ·1-%d ·C", len(enabled))
 	line := strings.Join(parts, " ")
-	return truncate(line+th.muted.Render(" ·1-6"), max(10, width-2))
+	return truncate(line+th.muted.Render(hint), max(10, width-2))
 }
 
 func waveUnder(playing bool, phase float64, width int, th theme) string {

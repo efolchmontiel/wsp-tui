@@ -117,8 +117,7 @@ FROM messages WHERE chat_id = ? AND id = ?`, chatID, id)
 	return scanMessage(row)
 }
 
-// ResolveIncomingCalls flips sticky call_incoming rows to call_missed for chatID
-// and any SameOneToOne sibling (LID vs phone). Returns the updated messages.
+// ResolveIncomingCalls flips sticky call_incoming to call_missed.
 func (s *Store) ResolveIncomingCalls(ctx context.Context, chatID, text string) ([]Message, error) {
 	if chatID == "" {
 		return nil, nil
@@ -167,7 +166,7 @@ FROM messages WHERE chat_id = ? AND type = ?`, id, TypeCallIncoming)
 	return updated, nil
 }
 
-// SweepStaleIncomingCalls marks call_incoming rows older than cutoffUnix as missed.
+// SweepStaleIncomingCalls marks old call_incoming rows as missed.
 func (s *Store) SweepStaleIncomingCalls(ctx context.Context, cutoffUnix int64) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, chat_id, sender, timestamp, text, type, status, quoted_message_id,

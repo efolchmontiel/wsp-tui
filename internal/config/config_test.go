@@ -105,3 +105,35 @@ func TestGIFProvider(t *testing.T) {
 		t.Fatal("giphy without key offline")
 	}
 }
+
+func TestSaveLoadFilterVisibility(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	cfg := Default()
+	cfg.Filters.Estados = true
+	cfg.Filters.Novedades = true
+	cfg.Filters.Groups = false
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Filters.Estados || !got.Filters.Novedades || got.Filters.Groups {
+		t.Fatalf("%+v", got.Filters)
+	}
+	if !got.Filters.All || !got.Filters.Favorites || !got.Filters.Archived {
+		t.Fatalf("defaults lost: %+v", got.Filters)
+	}
+}
+
+func TestDefaultHidesEstadosNovedades(t *testing.T) {
+	f := DefaultFilterVisibility()
+	if f.Estados || f.Novedades {
+		t.Fatalf("%+v", f)
+	}
+	if !f.All || !f.Favorites || !f.Groups || !f.Archived {
+		t.Fatalf("%+v", f)
+	}
+}

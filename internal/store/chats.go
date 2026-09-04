@@ -139,8 +139,7 @@ func preferChat(a, b Chat) bool {
 	return a.IsPinned && !b.IsPinned
 }
 
-// SameOneToOne reports whether two chat IDs likely refer to the same 1:1 peer
-// (phone vs LID duplicates).
+// SameOneToOne reports phone/LID chat-id aliases.
 func SameOneToOne(a, b string) bool {
 	if a == "" || b == "" {
 		return false
@@ -153,9 +152,7 @@ func SameOneToOne(a, b string) bool {
 	return ka != "" && ka == kb
 }
 
-// PreferExistingChatID picks an already-known chat row when WhatsApp alternates
-// between phone (@s.whatsapp.net) and LID (@lid) for the same peer — including
-// "message yourself".
+// PreferExistingChatID prefers a known chat when JIDs flip.
 func (s *Store) PreferExistingChatID(ctx context.Context, candidates ...string) string {
 	primary := ""
 	for _, id := range candidates {
@@ -192,20 +189,26 @@ func (s *Store) PreferExistingChatID(ctx context.Context, candidates ...string) 
 	return primary
 }
 
-// relatedOneToOneChatIDs returns chatID plus any phone/LID siblings that share
-// the same peer (so call_incoming sticky rows resolve across JID flips).
+// relatedOneToOneChatIDs lists peer JID siblings (incl. archived).
 func (s *Store) relatedOneToOneChatIDs(ctx context.Context, chatID string) []string {
 	out := []string{chatID}
-	chats, err := s.ListChats(ctx, 500)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, COALESCE(is_group, 0), COALESCE(is_community, 0) FROM chats`)
 	if err != nil {
 		return out
 	}
-	for _, c := range chats {
-		if c.ID == chatID || c.IsGroup || c.IsCommunity {
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var isGroup, isCommunity int
+		if err := rows.Scan(&id, &isGroup, &isCommunity); err != nil {
+			return out
+		}
+		if id == chatID || isGroup != 0 || isCommunity != 0 {
 			continue
 		}
-		if SameOneToOne(c.ID, chatID) {
-			out = append(out, c.ID)
+		if SameOneToOne(id, chatID) {
+			out = append(out, id)
 		}
 	}
 	return out
@@ -224,6 +227,19 @@ func (s *Store) IsChatArchived(ctx context.Context, chatID string) bool {
 	var v int
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(archived, 0) FROM chat_settings WHERE chat_id = ?`, chatID).Scan(&v)
 	return err == nil && v != 0
+}
+
+// IsChatArchivedLoose checks chatID and SameOneToOne siblings.
+func (s *Store) IsChatArchivedLoose(ctx context.Context, chatID string) bool {
+	if chatID == "" {
+		return false
+	}
+	for _, id := range s.relatedOneToOneChatIDs(ctx, chatID) {
+		if s.IsChatArchived(ctx, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) SetChatFavorite(ctx context.Context, chatID string, fav bool) error {
