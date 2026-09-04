@@ -643,16 +643,10 @@ func (m *Model) applyEvent(evt app.Event) tea.Cmd {
 			}
 			if !evt.IsReaction && m.desktopNotify && !evt.Msg.IsFromMe && evt.Msg.ChatID != m.selectedID {
 				if !m.store.IsChatArchivedLoose(context.Background(), evt.Msg.ChatID) {
-					title := "WhatsTUI"
-					for _, c := range m.chats {
-						if c.ID == evt.Msg.ChatID {
-							if c.Name != "" {
-								title = c.Name
-							}
-							break
-						}
-					}
-					go notify.Desktop(title, evt.Msg.Text)
+					chatName, isGroup := m.notifyChatInfo(evt.Msg.ChatID)
+					senderName := m.notifySenderLabel(evt.Msg.Sender, chatName, isGroup)
+					title, body := notify.FormatIncoming(chatName, senderName, isGroup, evt.Msg.Text)
+					go notify.Desktop(title, body)
 				}
 			}
 			if m.pendingOpenChat != "" && evt.Msg.ChatID == m.pendingOpenChat &&
@@ -1886,6 +1880,47 @@ func (m Model) peerLabel() string {
 		}
 	}
 	return "Contacto"
+}
+
+// notifyChatInfo resolves conversation label for desktop toasts.
+// Prefers the in-memory sidebar list, then the store (chats may be filtered out).
+func (m Model) notifyChatInfo(chatID string) (name string, isGroup bool) {
+	for _, c := range m.chats {
+		if c.ID == chatID {
+			return c.Name, c.IsGroup
+		}
+	}
+	if m.store != nil {
+		if c, err := m.store.GetChat(context.Background(), chatID); err == nil {
+			return c.Name, c.IsGroup
+		}
+	}
+	return "", strings.HasSuffix(chatID, "@g.us")
+}
+
+// notifySenderLabel picks a human label for the message author.
+func (m Model) notifySenderLabel(sender, chatName string, isGroup bool) string {
+	if !isGroup && strings.TrimSpace(chatName) != "" {
+		return chatName
+	}
+	sender = strings.TrimSpace(sender)
+	if sender == "" {
+		return ""
+	}
+	if m.store != nil {
+		ctx := context.Background()
+		if n := m.store.ContactDisplayName(ctx, sender); n != "" {
+			return n
+		}
+		if c, err := m.store.GetChat(ctx, sender); err == nil && strings.TrimSpace(c.Name) != "" {
+			return c.Name
+		}
+	}
+	user, _, ok := strings.Cut(sender, "@")
+	if ok && user != "" {
+		return user
+	}
+	return sender
 }
 
 func (m Model) renderStatus() string {
