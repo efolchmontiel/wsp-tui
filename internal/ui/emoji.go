@@ -220,7 +220,7 @@ func (m Model) viewEmojiPicker() string {
 func (m Model) viewGIFTab() string {
 	var b strings.Builder
 	if m.hasGiphyKey() {
-		b.WriteString(m.theme.muted.Render("Buscar en Giphy (opcional: también podés pegar un archivo local)"))
+		b.WriteString(m.theme.muted.Render("Buscar en Giphy (opcional: también puedes pegar un archivo local)"))
 		b.WriteString("\n")
 		b.WriteString(m.gifQuery.View())
 		b.WriteString("\n\n")
@@ -229,7 +229,7 @@ func (m Model) viewGIFTab() string {
 		} else if m.gifErr != "" {
 			b.WriteString(m.theme.statusErr.Render(m.gifErr))
 		} else if len(m.gifResults) == 0 {
-			b.WriteString(m.theme.muted.Render("Escribí y Enter para buscar · f = archivo .gif del disco"))
+			b.WriteString(m.theme.muted.Render("Escribe y Enter para buscar · f = archivo .gif del disco"))
 		} else {
 			for i, r := range m.gifResults {
 				line := truncate(r.Title, 48)
@@ -249,7 +249,7 @@ func (m Model) viewGIFTab() string {
 		b.WriteString("\n\n")
 		b.WriteString(m.theme.accent.Render("Enter"))
 		b.WriteString(" abrir selector (solo .gif)\n")
-		b.WriteString(m.theme.muted.Render("Tip: agregá giphy_api_key = \"…\" para buscar online."))
+		b.WriteString(m.theme.muted.Render("Tip: agrega giphy_api_key = \"…\" para buscar online."))
 	}
 	return b.String()
 }
@@ -331,7 +331,23 @@ func (m Model) updateEmojiPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.emojiMode == emojiModeReact && !m.emojiGIF {
 			return m.applyEmojiSelection("")
 		}
-	case "enter", " ":
+	case "enter":
+		if m.emojiGIF {
+			return m.confirmGIFTab()
+		}
+		items := m.emojiItems()
+		if len(items) == 0 {
+			return m, nil
+		}
+		m.emojiIdx = clampEmojiIdx(m.emojiIdx, len(items))
+		return m.applyEmojiSelection(items[m.emojiIdx])
+	case " ":
+		// Space must type into the Giphy search box — never trigger send/search.
+		if m.emojiGIF && m.hasGiphyKey() {
+			var cmd tea.Cmd
+			m.gifQuery, cmd = m.gifQuery.Update(msg)
+			return m, cmd
+		}
 		if m.emojiGIF {
 			return m.confirmGIFTab()
 		}
@@ -378,7 +394,7 @@ func (m Model) confirmGIFTab() (tea.Model, tea.Cmd) {
 func (m Model) runGiphySearch() (tea.Model, tea.Cmd) {
 	q := strings.TrimSpace(m.gifQuery.Value())
 	if q == "" {
-		m.gifErr = "Escribí un término de búsqueda"
+		m.gifErr = "Escribe un término de búsqueda"
 		return m, nil
 	}
 	m.gifBusy = true
@@ -434,16 +450,17 @@ func (m Model) applyGiphySend(msg giphySendMsg) (tea.Model, tea.Cmd) {
 	m.closeEmojiPicker()
 	if m.selectedID == "" {
 		_ = os.Remove(path)
-		m.errMsg = "Elegí un chat antes de enviar un GIF"
+		m.errMsg = "Elige un chat antes de enviar un GIF"
 		m.modal = modalError
 		return m, nil
 	}
 	m.uploadNote = "Enviando GIF…"
 	eng := m.eng
 	chat := m.selectedID
+	tmp := path
 	return m, func() tea.Msg {
-		defer os.Remove(path)
-		_, err := eng.SendFile(context.Background(), chat, path, "")
+		defer os.Remove(tmp) // temp only; SendFile copies into media/ first
+		_, err := eng.SendFile(context.Background(), chat, tmp, "")
 		return sendResultMsg{err: err}
 	}
 }
@@ -453,7 +470,7 @@ func (m Model) applyEmojiSelection(emoji string) (tea.Model, tea.Cmd) {
 	m.closeEmojiPicker()
 	if mode == emojiModeReact {
 		if m.selectedID == "" || len(m.messages) == 0 {
-			m.setInfo("Elegí un mensaje con [ ]")
+			m.setInfo("Elige un mensaje con [ ]")
 			return m, nil
 		}
 		idx := m.msgCursor
@@ -478,11 +495,11 @@ func (m Model) applyEmojiSelection(emoji string) (tea.Model, tea.Cmd) {
 
 func (m Model) openGIFPicker() (tea.Model, tea.Cmd) {
 	if m.selectedID == "" {
-		m.errMsg = "Elegí un chat antes de enviar un GIF"
+		m.errMsg = "Elige un chat antes de enviar un GIF"
 		return m, nil
 	}
 	if m.state != app.StateConnected {
-		m.errMsg = "Conectate antes de enviar archivos"
+		m.errMsg = "Conéctate antes de enviar archivos"
 		return m, nil
 	}
 	m.pickingFile = true
@@ -491,7 +508,7 @@ func (m Model) openGIFPicker() (tea.Model, tea.Cmd) {
 	fp.CurrentDirectory = homeDir()
 	fp.Height = max(8, m.height-8)
 	m.filePicker = fp
-	m.setInfo("GIF: elegí un archivo .gif")
+	m.setInfo("GIF: elige un archivo .gif")
 	return m, m.filePicker.Init()
 }
 

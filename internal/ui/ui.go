@@ -807,7 +807,7 @@ func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		if m.focus != focusInput || strings.TrimSpace(m.input.Value()) == "" {
 			if m.selectedID == "" || len(m.messages) == 0 {
-				m.setInfo("Abrí un chat y elegí un mensaje ([ ])")
+				m.setInfo("Abre un chat y elige un mensaje ([ ])")
 				return m, nil
 			}
 			m.openEmojiPicker(emojiModeReact)
@@ -917,11 +917,11 @@ func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) toggleVoiceNote() (tea.Model, tea.Cmd) {
 	if m.selectedID == "" {
-		m.setInfo("Elegí un chat antes de grabar")
+		m.setInfo("Elige un chat antes de grabar")
 		return m, nil
 	}
 	if m.state != app.StateConnected {
-		m.errMsg = "Conectate antes de enviar voz"
+		m.errMsg = "Conéctate antes de enviar voz"
 		m.modal = modalError
 		return m, nil
 	}
@@ -1054,11 +1054,11 @@ func (m Model) applySearchHit() (tea.Model, tea.Cmd) {
 
 func (m Model) openFilePicker() (tea.Model, tea.Cmd) {
 	if m.selectedID == "" {
-		m.errMsg = "Elegí un chat antes de adjuntar"
+		m.errMsg = "Elige un chat antes de adjuntar"
 		return m, nil
 	}
 	if m.state != app.StateConnected {
-		m.errMsg = "Conectate antes de enviar archivos"
+		m.errMsg = "Conéctate antes de enviar archivos"
 		return m, nil
 	}
 	m.pickingFile = true
@@ -1199,11 +1199,11 @@ func (m Model) updateSidebarKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) cycleDisappearing() (tea.Model, tea.Cmd) {
 	id := m.selectedSidebarChatID()
 	if id == "" {
-		m.setInfo("Elegí un chat")
+		m.setInfo("Elige un chat")
 		return m, nil
 	}
 	if m.state != app.StateConnected {
-		m.errMsg = "Conectate antes de cambiar mensajes temporales"
+		m.errMsg = "Conéctate antes de cambiar mensajes temporales"
 		m.modal = modalError
 		return m, nil
 	}
@@ -1251,7 +1251,7 @@ func (m Model) updateMessageKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return mod, tea.Batch(cmd, c)
 	case "r":
 		if m.selectedID == "" || len(m.messages) == 0 {
-			m.setInfo("Abrí un chat y elegí un mensaje ([ ])")
+			m.setInfo("Abre un chat y elige un mensaje ([ ])")
 			return m, cmd
 		}
 		m.openEmojiPicker(emojiModeReact)
@@ -1474,7 +1474,7 @@ confirmación de lectura activada en WhatsApp).
 Notificaciones de escritorio + sonido al llegar un mensaje en otro chat.
 Emoji: Ctrl+E inserta; Tab → GIF busca (Giphy) o archivo .gif.
 Giphy key: Ctrl+G para pegar/validar/guardar (o dejar vacía).
-Reacciones: [ ] elige el mensaje (también texto) y pulsá r.
+Reacciones: [ ] elige el mensaje (también texto) y pulsa r.
 
 Mouse: click en chat, scroll en lista/mensajes, click en input.`
 	box := m.theme.box.Width(max(48, min(m.width-4, 72)))
@@ -1505,7 +1505,7 @@ func (m Model) viewSearch() string {
 		if q == "" {
 			b.WriteString(m.theme.muted.Render("Chats, mensajes o contactos de la agenda…"))
 		} else {
-			b.WriteString(m.theme.muted.Render("Sin resultados — probá «a» para agregar por teléfono"))
+			b.WriteString(m.theme.muted.Render("Sin resultados — prueba «a» para agregar por teléfono"))
 		}
 		return b.String()
 	}

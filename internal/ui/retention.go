@@ -188,7 +188,7 @@ func (m Model) applyRetentionSelection() (tea.Model, tea.Cmd) {
 		raw := strings.TrimSpace(m.retAmount.Value())
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
-			m.setInfo("Ingresá un número ≥ 1 para personalizado")
+			m.setInfo("Ingresa un número ≥ 1 para personalizado")
 			return m, nil
 		}
 		unit := m.retUnit

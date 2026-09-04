@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,22 @@ func (e *Engine) SendFile(ctx context.Context, chatID, path, caption string) (st
 	msgType, waType, mimeType := media.ClassifyPath(path)
 	fileName := filepath.Base(path)
 	size := st.Size()
+
+	// Persist under the media tree before async upload. Callers may pass /tmp
+	// paths (e.g. Giphy) that disappear after SendFile returns.
+	perm, copyErr := mgr.AllocPath(msgType, fileName)
+	if copyErr != nil {
+		return store.Message{}, copyErr
+	}
+	if err := copyFile(path, perm); err != nil {
+		return store.Message{}, fmt.Errorf("copy media: %w", err)
+	}
+	path = perm
+	fileName = filepath.Base(path)
+	if st2, err := os.Stat(path); err == nil {
+		size = st2.Size()
+	}
+
 	id := client.GenerateMessageID()
 	mediaID := chatID + "|" + string(id)
 	now := time.Now()
@@ -486,7 +503,30 @@ func (e *Engine) RequestMessageResend(ctx context.Context, chatID, sender, messa
 	}
 	e.bus.Publish(app.Event{
 		Kind:    app.EventInfo,
-		Message: "Pedí el adjunto al teléfono… cuando llegue, tocá o de nuevo",
+		Message: "Se pidió el adjunto al teléfono… cuando llegue, pulsa o de nuevo",
 	})
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(dst)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dst)
+		return closeErr
+	}
 	return nil
 }

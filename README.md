@@ -71,7 +71,7 @@ wsp-tui
 ### Windows
 
 1. Instalá [Go](https://go.dev/dl/) y [ffmpeg](https://ffmpeg.org/download.html) (en PATH).
-2. Abrí **Windows Terminal** o PowerShell:
+2. Abre **Windows Terminal** o PowerShell:
 
 ```powershell
 git clone https://github.com/efolchmontiel/wsp-tui.git
@@ -97,8 +97,8 @@ En el próximo arranque reutiliza la sesión local (sin pedir QR otra vez).
 
 ### Alternativa: pairing code
 
-1. En la pantalla de login, pulsá `p`.
-2. Ingresá el número internacional **sin** `+` (ej. `54911…`).
+1. En la pantalla de login, pulsa `p`.
+2. Ingresa el número internacional **sin** `+` (ej. `54911…`).
 3. Enter → código `ABCD-1234`.
 4. En el teléfono: vincular con número de teléfono.
 
@@ -142,12 +142,12 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 ### Emoji, reacciones y GIF
 
 1. **Enviar emoji:** en el input, `Ctrl+E` → flechas → `Enter` inserta → `Enter` otra vez envía.
-2. **Giphy API key (opcional):** `Ctrl+G` → pegá la key → `Enter` la **valida** contra Giphy y la guarda.
+2. **Giphy API key (opcional):** `Ctrl+G` → pega la key → `Enter` la **valida** contra Giphy y la guarda.
    - Correcta → mensaje OK y queda en `config.toml`.
    - Incorrecta → error claro, **no** se guarda.
    - Vacío + Enter → borra la key (solo archivos `.gif` locales). `Ctrl+U` limpia el campo.
 3. **GIF:** `Ctrl+E` → `Tab` hasta **GIF**.
-   - Con key válida: escribí, `Enter` busca, ↑↓ elegí, `Enter` envía. `f` = archivo local.
+   - Con key válida: escribí, `Enter` busca, ↑↓ elige, `Enter` envía. `f` = archivo local.
    - Sin key: `Enter` abre el selector de `.gif` del disco.
 4. **Reaccionar:** `[` / `]` apunta **cualquier** mensaje (también texto) → `r` → emoji → `Enter`. `Backspace` en el panel quita tu reacción.
 
@@ -187,7 +187,7 @@ giphy_api_key = ""
 | `never` | no limpia nunca |
 | `3months` | **default** |
 
-En la TUI: tecla **`R`** abre un modal (como `?` ayuda): `*` marca la opción activa, podés elegir preset o personalizado (número + ←→ semana/mes/año).
+En la TUI: tecla **`R`** abre un modal (como `?` ayuda): `*` marca la opción activa, puedes elegir preset o personalizado (número + ←→ semana/mes/año).
 
 | Valor `preview_protocol` | Uso |
 |--------------------------|-----|
@@ -195,7 +195,7 @@ En la TUI: tecla **`R`** abre un modal (como `?` ayuda): `*` marca la opción ac
 | `kitty` / `iterm2` / `sixel` | forzar protocolo |
 | `halfblocks` | fallback Unicode (cualquier terminal) |
 
-`giphy_api_key` es **opcional**. Preferí configurarla desde la TUI con **`Ctrl+G`** (valida online y guarda). Sin ella, el tab GIF sigue funcionando con archivos locales.
+`giphy_api_key` es **opcional**. Se recomienda configurarla desde la TUI con **`Ctrl+G`** (valida online y guarda). Sin ella, el tab GIF sigue funcionando con archivos locales.
 
 ## Datos locales
 
@@ -210,7 +210,7 @@ Ahí viven `session.db`, `whatstui.db` y `media/`.
 
 | Problema | Qué hacer |
 |----------|-----------|
-| QR no se ve | Terminal UTF-8 / fuente mono; probá `--debug` y el log |
+| QR no se ve | Terminal UTF-8 / fuente mono; prueba `--debug` y el log |
 | Sesión rota | `wsp-tui --logout` o `--reset` y volvé a vincular |
 | Sin audio en Linux | `ffmpeg` + Pulse/PipeWire |
 | Sin audio en Windows | `ffmpeg` con WASAPI en PATH |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -62,7 +63,79 @@ LIMIT ?`
 		c.IsCommunity = isCommunity != 0
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dedupeOneToOneChats(out), nil
+}
+
+// dedupeOneToOneChats collapses LID + phone JID duplicates that share the same
+// display phone (e.g. two "+56 9 …" rows for one contact).
+func dedupeOneToOneChats(in []Chat) []Chat {
+	if len(in) < 2 {
+		return in
+	}
+	best := map[string]int{} // key → index in out
+	out := make([]Chat, 0, len(in))
+	for _, c := range in {
+		if c.IsGroup || c.IsCommunity {
+			out = append(out, c)
+			continue
+		}
+		key := chatDedupeKey(c)
+		if key == "" {
+			out = append(out, c)
+			continue
+		}
+		if prev, ok := best[key]; ok {
+			if preferChat(c, out[prev]) {
+				out[prev] = c
+			}
+			continue
+		}
+		best[key] = len(out)
+		out = append(out, c)
+	}
+	return out
+}
+
+func chatDedupeKey(c Chat) string {
+	digits := onlyDigits(c.Name)
+	if len(digits) >= 8 {
+		return digits
+	}
+	digits = onlyDigits(c.ID)
+	if len(digits) >= 8 {
+		return digits
+	}
+	return ""
+}
+
+func onlyDigits(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch >= '0' && ch <= '9' {
+			b = append(b, ch)
+		}
+	}
+	return string(b)
+}
+
+func preferChat(a, b Chat) bool {
+	// Prefer classic WhatsApp phone JIDs over LID aliases.
+	aPN := strings.Contains(a.ID, "@s.whatsapp.net")
+	bPN := strings.Contains(b.ID, "@s.whatsapp.net")
+	if aPN != bPN {
+		return aPN
+	}
+	if a.LastMessageAt != b.LastMessageAt {
+		return a.LastMessageAt > b.LastMessageAt
+	}
+	if a.UnreadCount != b.UnreadCount {
+		return a.UnreadCount > b.UnreadCount
+	}
+	return a.IsPinned && !b.IsPinned
 }
 
 // SetChatArchived marks a conversation archived (hidden from Todos).

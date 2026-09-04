@@ -21,7 +21,7 @@ type (
 
 func newGiphyKeyInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "pegá tu Giphy API key…"
+	ti.Placeholder = "pega tu Giphy API key…"
 	ti.CharLimit = 128
 	ti.Width = 48
 	ti.Prompt = "key › "

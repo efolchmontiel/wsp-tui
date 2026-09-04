@@ -72,7 +72,7 @@ func (m Model) openSelectedMedia() (tea.Model, tea.Cmd) {
 		m.setInfo("Sin claves — pidiendo al teléfono…")
 		return m, requestResendCmd(m.eng, msg)
 	}
-	m.setInfo("Ese mensaje no tiene adjunto — movete con [ ] o usá o en un audio/imagen")
+	m.setInfo("Ese mensaje no tiene adjunto — usa [ ] o la tecla o en un audio/imagen")
 	return m, nil
 }
 
@@ -102,7 +102,7 @@ func filterLabel(f store.ChatFilter) string {
 func (m Model) toggleArchiveSelected() (tea.Model, tea.Cmd) {
 	id := m.selectedSidebarChatID()
 	if id == "" {
-		m.setInfo("Elegí un chat")
+		m.setInfo("Elige un chat")
 		return m, nil
 	}
 	cur := m.store.IsChatArchived(context.Background(), id)
@@ -126,7 +126,7 @@ func (m Model) toggleArchiveSelected() (tea.Model, tea.Cmd) {
 func (m Model) toggleFavoriteSelected() (tea.Model, tea.Cmd) {
 	id := m.selectedSidebarChatID()
 	if id == "" {
-		m.setInfo("Elegí un chat")
+		m.setInfo("Elige un chat")
 		return m, nil
 	}
 	fav := true

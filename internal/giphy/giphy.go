@@ -52,7 +52,7 @@ func Search(ctx context.Context, apiKey, query string, limit int) ([]Result, err
 		return nil, fmt.Errorf("giphy_api_key no configurada")
 	}
 	if query == "" {
-		return nil, fmt.Errorf("escribí qué buscar")
+		return nil, fmt.Errorf("escribe qué buscar")
 	}
 	if limit <= 0 || limit > 25 {
 		limit = 12

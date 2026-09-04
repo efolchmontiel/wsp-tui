@@ -15,7 +15,7 @@ import (
 
 func (m Model) openAddContact() (tea.Model, tea.Cmd) {
 	if m.state != app.StateConnected {
-		m.errMsg = "Conectate antes de agregar contactos"
+		m.errMsg = "Conéctate antes de agregar contactos"
 		m.modal = modalError
 		return m, nil
 	}
