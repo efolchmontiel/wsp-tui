@@ -1,0 +1,2 @@
+-- Phase 1 schema is applied in Go (internal/store).
+-- Future migrations can live here as numbered SQL files.

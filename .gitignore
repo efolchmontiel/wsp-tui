@@ -1,0 +1,12 @@
+/whatstui
+/wsp-tui
+*.exe
+*.test
+*.out
+/dist/
+.idea/
+.vscode/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
