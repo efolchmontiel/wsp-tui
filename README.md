@@ -14,7 +14,7 @@ Repo: [github.com/efolchmontiel/wsp-tui](https://github.com/efolchmontiel/wsp-tu
 
 - Chats 1:1 y grupos, con filtros: **Todos / Favoritos / Grupos / Novedades (comunidades) / Archivados**
 - Envío de **texto**, **emojis** (`Ctrl+E`) y **reacciones** (`[` / `]` + `r`)
-- **GIF**: recibir (preview animado) y enviar — búsqueda **Giphy** (API key opcional) o archivo `.gif` local
+- **GIF**: recibir (preview animado) y enviar — búsqueda **Giphy** (`Ctrl+G` para la API key opcional) o archivo `.gif` local
 - Adjuntos (`Ctrl+O`), **notas de voz** (`v`), abrir/descargar media (`o` / `d`)
 - **Previews inline** de imagen/GIF y **link embeds** (YouTube, etc.) vía Kitty / iTerm2 / Sixel / halfblocks
 - Ticks de estado: enviado / entregado / leído (azul)
@@ -121,6 +121,7 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 |-------|--------|
 | `1`–`5` | Todos / Favoritos / Grupos / Novedades / Archivados |
 | `R` | Modal de **retención local** (presets con `*` + personalizado N semana/mes/año) |
+| `Ctrl+G` | **Giphy API key**: pegar / validar / guardar (o borrar) |
 | `Ctrl+E` | Panel **emoji / GIF** (insertar en el input) |
 | `r` | **Reaccionar** al mensaje seleccionado (`[` / `]`) |
 | `e` | Archivar / desarchivar |
@@ -141,10 +142,14 @@ Aliases tras `make install`: `wstui`, `whatstui`.
 ### Emoji, reacciones y GIF
 
 1. **Enviar emoji:** en el input, `Ctrl+E` → flechas → `Enter` inserta → `Enter` otra vez envía.
-2. **GIF:** `Ctrl+E` → `Tab` hasta **GIF**.
-   - Con `giphy_api_key` en el config: escribí, `Enter` busca, ↑↓ elegí, `Enter` envía. `f` = archivo local.
+2. **Giphy API key (opcional):** `Ctrl+G` → pegá la key → `Enter` la **valida** contra Giphy y la guarda.
+   - Correcta → mensaje OK y queda en `config.toml`.
+   - Incorrecta → error claro, **no** se guarda.
+   - Vacío + Enter → borra la key (solo archivos `.gif` locales). `Ctrl+U` limpia el campo.
+3. **GIF:** `Ctrl+E` → `Tab` hasta **GIF**.
+   - Con key válida: escribí, `Enter` busca, ↑↓ elegí, `Enter` envía. `f` = archivo local.
    - Sin key: `Enter` abre el selector de `.gif` del disco.
-3. **Reaccionar:** `[` / `]` apunta **cualquier** mensaje (también texto) → `r` → emoji → `Enter`. `Backspace` en el panel quita tu reacción.
+4. **Reaccionar:** `[` / `]` apunta **cualquier** mensaje (también texto) → `r` → emoji → `Enter`. `Backspace` en el panel quita tu reacción.
 
 Llamadas: banner amarillo = entrante · rojo claro = perdida (no se contestan desde la TUI).
 
@@ -190,7 +195,7 @@ En la TUI: tecla **`R`** abre un modal (como `?` ayuda): `*` marca la opción ac
 | `kitty` / `iterm2` / `sixel` | forzar protocolo |
 | `halfblocks` | fallback Unicode (cualquier terminal) |
 
-`giphy_api_key` es **opcional**. Sin ella, el tab GIF sigue funcionando con archivos locales.
+`giphy_api_key` es **opcional**. Preferí configurarla desde la TUI con **`Ctrl+G`** (valida online y guarda). Sin ella, el tab GIF sigue funcionando con archivos locales.
 
 ## Datos locales
 

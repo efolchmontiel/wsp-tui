@@ -48,6 +48,7 @@ const (
 	modalError
 	modalConfirmDelete
 	modalRetention
+	modalGiphyKey
 )
 
 // Model is the root TUI.
@@ -141,6 +142,11 @@ type Model struct {
 	gifCursor  int
 	gifBusy    bool
 	gifErr     string
+
+	// Giphy API key modal (Ctrl+G)
+	giphyKeyInput  textinput.Model
+	giphyKeyStatus string
+	giphyKeyBusy   bool
 }
 
 type (
@@ -256,6 +262,7 @@ func New(bus *app.Bus, eng *engine.Engine, st *store.Store, hasSession bool, cfg
 		retAmount:     newRetentionAmountInput(),
 		retUnit:       config.UnitMonth,
 		gifQuery:      newGIFQueryInput(),
+		giphyKeyInput: newGiphyKeyInput(),
 	}
 }
 
@@ -437,6 +444,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case giphySendMsg:
 		return m.applyGiphySend(msg)
+
+	case giphyKeyCheckMsg:
+		return m.applyGiphyKeyCheck(msg)
 
 	case olderMessagesMsg:
 		m.loadingMsgs = false
@@ -791,6 +801,9 @@ func (m Model) updateMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+e":
 		m.openEmojiPicker(emojiModeInsert)
 		return m, nil
+	case "ctrl+g":
+		m.openGiphyKeyModal()
+		return m, nil
 	case "r":
 		if m.focus != focusInput || strings.TrimSpace(m.input.Value()) == "" {
 			if m.selectedID == "" || len(m.messages) == 0 {
@@ -967,6 +980,9 @@ func (m Model) openSearch() (tea.Model, tea.Cmd) {
 func (m Model) updateModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modal == modalRetention {
 		return m.updateRetentionModalKeys(msg)
+	}
+	if m.modal == modalGiphyKey {
+		return m.updateGiphyKeyModalKeys(msg)
 	}
 	switch msg.String() {
 	case "esc", "enter", "q", "?", "ctrl+c":
@@ -1270,6 +1286,9 @@ func (m Model) updateInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+e":
 		m.openEmojiPicker(emojiModeInsert)
 		return m, nil
+	case "ctrl+g":
+		m.openGiphyKeyModal()
+		return m, nil
 	case "ctrl+o":
 		return m.openFilePicker()
 	case "o":
@@ -1397,6 +1416,9 @@ func (m Model) View() string {
 	if m.modal == modalRetention {
 		return m.viewRetentionModal()
 	}
+	if m.modal == modalGiphyKey {
+		return m.viewGiphyKeyModal()
+	}
 	if m.modal == modalError {
 		return m.viewErrorModal()
 	}
@@ -1432,6 +1454,7 @@ func (m Model) viewHelpModal() string {
   x                   Eliminar chat local (sidebar)
   [ / ]               Seleccionar mensaje (texto o media) · r reacciona · o/d si hay adjunto
   R                   Retención local (modal: presets + personalizado)
+  Ctrl+G              Giphy API key (validar y guardar en config)
   Ctrl+E              Panel emoji / GIF (Giphy si hay API key; si no, archivo .gif)
   r                   Reaccionar al mensaje seleccionado ([ ])
   Ctrl+O              Adjuntar archivo
@@ -1450,6 +1473,7 @@ Ticks: ✓ enviado · ✓✓ entregado · ✓✓ azul = leído (si el otro tiene
 confirmación de lectura activada en WhatsApp).
 Notificaciones de escritorio + sonido al llegar un mensaje en otro chat.
 Emoji: Ctrl+E inserta; Tab → GIF busca (Giphy) o archivo .gif.
+Giphy key: Ctrl+G para pegar/validar/guardar (o dejar vacía).
 Reacciones: [ ] elige el mensaje (también texto) y pulsá r.
 
 Mouse: click en chat, scroll en lista/mensajes, click en input.`

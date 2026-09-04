@@ -111,6 +111,62 @@ func Search(ctx context.Context, apiKey, query string, limit int) ([]Result, err
 	return out, nil
 }
 
+// ValidateKey checks whether a Giphy API key is accepted by the API.
+// Empty key is considered "cleared" (ok=true, valid=false meaning unused).
+func ValidateKey(ctx context.Context, apiKey string) (valid bool, err error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false, nil
+	}
+	u, err := url.Parse(searchURL)
+	if err != nil {
+		return false, err
+	}
+	q := u.Query()
+	q.Set("api_key", apiKey)
+	q.Set("q", "ok")
+	q.Set("limit", "1")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false, err
+	}
+	client := &http.Client{Timeout: 12 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("sin red: %w", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return false, err
+	}
+	switch res.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return false, fmt.Errorf("API key inválida o rechazada")
+	case http.StatusTooManyRequests:
+		return false, fmt.Errorf("rate limit de Giphy — reintentá en un rato")
+	}
+	var parsed searchResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			return false, fmt.Errorf("HTTP %d", res.StatusCode)
+		}
+		return false, fmt.Errorf("respuesta giphy ilegible")
+	}
+	if parsed.Meta.Status == 401 || parsed.Meta.Status == 403 {
+		return false, fmt.Errorf("API key inválida: %s", parsed.Meta.Message)
+	}
+	if parsed.Meta.Status != 0 && parsed.Meta.Status != 200 {
+		return false, fmt.Errorf("giphy: %s", parsed.Meta.Message)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return false, fmt.Errorf("HTTP %d", res.StatusCode)
+	}
+	return true, nil
+}
+
 // DownloadToTemp fetches a GIF URL into a temp .gif file. Caller should remove it.
 func DownloadToTemp(ctx context.Context, gifURL string) (string, error) {
 	gifURL = strings.TrimSpace(gifURL)
